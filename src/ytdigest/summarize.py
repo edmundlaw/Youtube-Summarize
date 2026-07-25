@@ -1,0 +1,281 @@
+"""Summarisation, with the ledger supplied as the sole source of figures.
+
+Two things here earn their complexity:
+
+* map-reduce, so a 2.5-hour transcript does not have to fit one context. The
+  ledger is passed to BOTH levels, so the reduce step never has to recall a
+  number from a map-level summary.
+* the validator retry loop. The prompt already forbids inventing figures and
+  the model does it anyway when captions truncate mid-sentence, so the
+  regeneration pass names the offending figures explicitly.
+"""
+
+from __future__ import annotations
+
+import json
+
+import httpx
+
+from .config import Config, load_glossary
+from .db import RETRYABLE, StageError
+from .normalize import LedgerEntry
+from .validator import (
+    PASSED_WITH_FLAGS, check_text, offending, retry_instruction, verdict,
+)
+
+PROMPT_VERSION = "v2"
+
+
+def _mmss(seconds: float) -> str:
+    return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
+
+
+class DeepSeek:
+    """Summarizer implementation for DeepSeek's OpenAI-compatible endpoint.
+
+    Note: these models spend reasoning tokens before emitting output, and those
+    count against max_tokens. A budget sized only for the answer returns an
+    empty string with finish_reason 'length' — silently, and it looks like a
+    parse bug rather than a budget one.
+    """
+
+    def __init__(self, cfg: Config, model: str | None = None):
+        self.cfg = cfg
+        self.id = model or cfg.get("summarize", "model", "deepseek-v4-flash")
+        self.base_url = cfg.get("summarize", "base_url", "https://api.deepseek.com")
+        self._key = cfg.require_secret("DEEPSEEK_API_KEY")
+
+    def complete(self, system: str, user: str, max_tokens: int = 10000) -> str:
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self._key}"},
+                json={
+                    "model": self.id,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "max_tokens": max_tokens,
+                },
+                timeout=900,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            # 429 and 5xx are worth retrying; a 400 means our request is wrong.
+            klass = RETRYABLE if status == 429 or status >= 500 else "permanent"
+            raise StageError(f"deepseek {status}: {exc.response.text[:300]}", klass) from exc
+        except Exception as exc:
+            raise StageError(f"deepseek request failed: {exc}", RETRYABLE) from exc
+
+        choice = payload["choices"][0]
+        content = choice.get("message", {}).get("content") or ""
+        if not content:
+            raise StageError(
+                f"empty completion (finish_reason={choice.get('finish_reason')}); "
+                "raise summarize.max_tokens — reasoning tokens count against it",
+                RETRYABLE,
+            )
+        return content
+
+
+def _system_prompt(ledger: list[LedgerEntry], lang: str) -> str:
+    target = "English" if lang == "en" else "繁體中文（香港）"
+    glossary = ", ".join(load_glossary())
+    allowed = "\n".join(
+        f"  - {e.raw_text}  [{_mmss(e.start_s)}]" for e in _dedupe(ledger)[:120]
+    )
+    return f"""你為香港投資者提煉財經影片。輸出語言：{target}。
+
+以下詞彙保持英文原樣，唔准翻譯：{glossary}
+股票代號（0700.HK、BABA）照原文。
+保留主持嘅粵語口語（嘅／咗／喺／唔／哋），唔好改成書面語。
+
+【最重要：唔好寫「內容摘要」，要寫「主持實際主張咗乜、點解」】
+禁止呢類句子（適用於任何一集＝等於冇講嘢）：
+  ✗「討論AI泡沫」✗「分析港股走勢」✗「提醒投資者注意風險」
+測試：一句話如果可以原封不動放喺任何一日任何一集，刪咗佢。
+要寫：邊個講、具體主張、佢嘅理由。主持之間有分歧要特別指出。
+
+【數字鐵律】
+你只可以使用以下喺字幕入面真正出現過嘅數字：
+{allowed}
+
+唔准推算、唔准四捨五入、唔准補完。
+如果某段字幕斷咗、殘缺、講到一半冇咗，就唔好寫個數字，
+改為寫「字幕於此中斷」。寧願少寫，都唔可以砌一個數字出嚟。
+
+JSON 字串值裏面唔好用半形雙引號 \" ，要引用字幕原文就用「」。
+
+輸出 JSON：
+{{"actionable":[{{"ts":"MM:SS","ticker":"如有","claim":""}}],
+ "theses":[{{"ts":"MM:SS","thesis":"","reasoning":""}}],
+ "disagreements":[{{"ts":"MM:SS","detail":""}}],
+ "risks":[{{"ts":"MM:SS","risk":""}}],
+ "numbers":[{{"figure":"","context":"","ts":"MM:SS"}}]}}"""
+
+
+def loads_lenient(text: str) -> dict:
+    """Parse model JSON, repairing the one break it reliably produces.
+
+    Observed in a live run: the model quoted transcript text inside a value
+    without escaping, e.g.
+
+        "context": "字幕寫"202" 唔清楚。",
+
+    which is invalid JSON from that character onward. `response_format:
+    json_object` does not prevent it. Rather than fail a whole 2.5-hour
+    summary on one stray quote, walk the text and escape interior quotes —
+    a quote is closing only if the next non-space character is one of , : } ]
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    repaired: list[str] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            repaired.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            repaired.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            if not in_string:
+                in_string = True
+                repaired.append(char)
+                continue
+            following = text[index + 1 :]
+            stripped = following.lstrip(" \t\r\n")
+            if stripped[:1] in {",", ":", "}", "]", ""}:
+                in_string = False
+                repaired.append(char)
+            else:
+                repaired.append('\\"')  # interior quote — escape it
+            continue
+        repaired.append(char)
+
+    candidate = "".join(repaired)
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise StageError(
+            f"model returned unparseable JSON even after repair: {exc}", RETRYABLE
+        ) from exc
+
+
+def _dedupe(ledger: list[LedgerEntry]) -> list[LedgerEntry]:
+    seen: set[tuple[str, str]] = set()
+    out: list[LedgerEntry] = []
+    for entry in ledger:
+        key = (entry.raw_text, entry.unit)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return out
+
+
+def _transcript_text(segments) -> str:
+    return "\n".join(f"[{_mmss(s.start)}] {s.text}" for s in segments)
+
+
+def _flatten(payload: dict) -> str:
+    """Every free-text field the validator must inspect."""
+    parts: list[str] = []
+    for item in payload.get("actionable", []):
+        parts.append(str(item.get("claim", "")))
+    for item in payload.get("theses", []):
+        parts += [str(item.get("thesis", "")), str(item.get("reasoning", ""))]
+    for item in payload.get("disagreements", []):
+        parts.append(str(item.get("detail", "")))
+    for item in payload.get("risks", []):
+        parts.append(str(item.get("risk", "")))
+    for item in payload.get("numbers", []):
+        parts += [str(item.get("figure", "")), str(item.get("context", ""))]
+    return "\n".join(parts)
+
+
+def summarize(
+    cfg: Config,
+    segments,
+    ledger: list[LedgerEntry],
+    lang: str,
+    log=None,
+) -> tuple[dict, str, list]:
+    """Generate, validate, retry once, and return (payload, state, checks)."""
+    engine = DeepSeek(cfg)
+    system = _system_prompt(ledger, lang)
+    body = _transcript_text(segments)
+    max_tokens = int(cfg.get("summarize", "max_tokens", 10000))
+
+    threshold = int(cfg.get("summarize", "map_reduce_threshold_tokens", 12000))
+    if len(body) > threshold * 2:
+        body = _map_reduce(engine, system, segments, max_tokens, cfg, log)
+
+    payload = loads_lenient(engine.complete(system, body, max_tokens))
+    checks = check_text(_flatten(payload), ledger)
+    state = verdict(checks)
+
+    if offending(checks):
+        if log:
+            log.warning("summarize.retry", offenders=offending(checks))
+        instruction = retry_instruction(checks, ledger)
+        escalate = cfg.get("summarize", "escalate_model", None)
+        retry_engine = DeepSeek(cfg, escalate) if escalate else engine
+        payload = loads_lenient(
+            retry_engine.complete(system, f"{body}\n\n---\n{instruction}", max_tokens)
+        )
+        checks = check_text(_flatten(payload), ledger)
+        state = verdict(checks)
+        # Still unverifiable after one retry: publish with the figures marked
+        # rather than dropping the summary. A flagged figure is useful; a
+        # silently-published wrong one is not.
+        if offending(checks):
+            state = PASSED_WITH_FLAGS
+            if log:
+                log.warning("summarize.still_unverified", offenders=offending(checks))
+
+    return payload, state, checks
+
+
+def _map_reduce(engine: DeepSeek, system: str, segments, max_tokens: int,
+                cfg: Config, log=None) -> str:
+    """Chunk-level summaries, then a synthesis pass.
+
+    The ledger travels in `system`, so it is present at both levels and the
+    reduce step never recalls a number from a map-level summary.
+    """
+    size = int(cfg.get("summarize", "chunk_tokens", 8000))
+    chunks: list[list] = []
+    current: list = []
+    length = 0
+    for seg in segments:
+        current.append(seg)
+        length += len(seg.text)
+        if length >= size:
+            chunks.append(current)
+            current, length = [], 0
+    if current:
+        chunks.append(current)
+
+    if log:
+        log.info("summarize.map_reduce", chunks=len(chunks))
+
+    partials: list[str] = []
+    for index, chunk in enumerate(chunks):
+        text = engine.complete(
+            system + "\n\n（呢個係影片其中一段，先做分段摘要）",
+            _transcript_text(chunk),
+            max_tokens,
+        )
+        partials.append(f"--- 第{index + 1}段 ---\n{text}")
+    return "\n\n".join(partials)

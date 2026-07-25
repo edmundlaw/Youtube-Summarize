@@ -1,0 +1,59 @@
+# ytdigest configuration. Secrets live in .env (chmod 600), never here.
+
+[paths]
+# Relative paths resolve against the repo root.
+data_dir = "data"
+out_dir  = "out"
+
+[runner]
+# Per-stage wall-clock timeout in seconds. A hung yt-dlp or runaway decode
+# must not block the queue forever.
+timeout_fetch_s      = 900
+timeout_transcribe_s = 7200
+timeout_normalize_s  = 300
+timeout_summarize_s  = 900
+timeout_publish_s     = 120
+max_attempts         = 3
+# Oldest-first, and never more than this many videos per invocation.
+max_videos_per_run   = 12
+
+[discover]
+# Ignore anything published before this many days ago on first sync of a new
+# channel, so adding a channel does not enqueue its entire back catalogue.
+backfill_days = 7
+
+[asr]
+engine    = "qwen3"                                  # qwen3 | whisper | subtitles
+model_id  = "mlx-community/Qwen3-ASR-1.7B-8bit"
+# Chunking (ARCHITECTURE §8)
+chunk_target_s     = 25.0
+chunk_max_s        = 30.0
+chunk_overlap_s    = 1.5
+min_silence_ms     = 300
+# Segments below this confidence are rendered with a warning marker in output.
+low_confidence     = 0.55
+# Prefer human-uploaded subtitles over ASR when available (free and exact).
+prefer_manual_subs = true
+# Delete the wav after a successful transcribe.
+keep_audio         = false
+
+[summarize]
+provider       = "deepseek"
+model          = "deepseek-v4-flash"
+escalate_model = "deepseek-v4-pro"   # used for the validator retry pass
+base_url       = "https://api.deepseek.com"
+prompt_version = "v1"
+# Reasoning tokens count against this budget on deepseek-v4-*; a value sized
+# only for the answer returns an empty completion.
+max_tokens     = 12000
+# Above this many transcript tokens, use map-reduce instead of a single pass.
+map_reduce_threshold_tokens = 12000
+chunk_tokens                = 8000
+
+[publish]
+# Telegram credentials come from .env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+telegram = true
+# Post a digest even when nothing new was produced (so silence is unambiguous).
+notify_on_empty = false
+# Warn if the oldest pending item is older than this.
+stale_queue_hours = 48

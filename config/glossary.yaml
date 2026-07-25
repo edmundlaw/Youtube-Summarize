@@ -1,0 +1,72 @@
+# Protected terms. These stay in English in both transcript and summary.
+# The summariser prompt embeds this list as an explicit do-not-translate rule
+# (ARCHITECTURE §7). Add freely; the cost is a few prompt tokens.
+
+metrics:
+  - EBITDA
+  - EBIT
+  - FCF
+  - free cash flow
+  - operating margin
+  - gross margin
+  - net margin
+  - NAV
+  - SOTP
+  - P/B
+  - P/E
+  - forward P/E
+  - EV/EBITDA
+  - ROE
+  - ROIC
+  - CAGR
+  - YoY
+  - QoQ
+  - guidance
+  - payout ratio
+  - dividend yield
+  - buyback
+  - holdco discount
+  - book value
+  - run rate
+  - take rate
+  - churn
+  - ARPU
+  - GMV
+  - capex
+  - opex
+  - working capital
+  - deleveraging
+  - basis points
+  - bps
+
+market_structure:
+  - short interest
+  - float
+  - lock-up
+  - placement
+  - rights issue
+  - spin-off
+  - IPO
+  - ADR
+  - H-share
+  - A-share
+  - southbound
+  - northbound
+  - Stock Connect
+  - HSI
+  - HSCEI
+  - Hang Seng
+
+macro:
+  - CPI
+  - PPI
+  - PMI
+  - GDP
+  - Fed
+  - FOMC
+  - HIBOR
+  - SOFR
+  - QE
+  - QT
+  - yield curve
+  - term premium

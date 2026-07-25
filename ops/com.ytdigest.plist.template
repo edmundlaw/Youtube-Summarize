@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. Replace __YTDIGEST_HOME__ with the absolute path to your checkout,
+  then install:
+
+    sed "s|__YTDIGEST_HOME__|$PWD|g" ops/com.ytdigest.plist.template \
+      > ~/Library/LaunchAgents/com.ytdigest.plist
+    launchctl load ~/Library/LaunchAgents/com.ytdigest.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ytdigest</string>
+
+  <!-- caffeinate -i keeps the machine awake through a long transcription.
+       yt-dlp is upgraded first: a stale copy is the single most likely cause
+       of a silent pipeline stall when YouTube changes something. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>cd __YTDIGEST_HOME__ &amp;&amp; ./.venv/bin/python -m pip install -q -U yt-dlp ; /usr/bin/caffeinate -i ./.venv/bin/ytdigest run</string>
+  </array>
+
+  <!-- launchd, not cron: cron silently skips runs when the Mac sleeps. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__YTDIGEST_HOME__</string>
+  <key>StandardOutPath</key>
+  <string>__YTDIGEST_HOME__/data/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__YTDIGEST_HOME__/data/logs/launchd.err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <!-- Keeps this behind interactive work on a memory-constrained machine. -->
+  <key>Nice</key>
+  <integer>5</integer>
+</dict>
+</plist>
