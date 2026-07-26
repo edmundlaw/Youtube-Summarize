@@ -85,5 +85,7 @@ sed "s|__YTDIGEST_HOME__|$PWD|g" ops/com.ytdigest.plist.template \
 launchctl load ~/Library/LaunchAgents/com.ytdigest.plist
 ```
 
-Runs 07:00 and 19:00 HKT under `caffeinate -i`, upgrading yt-dlp first.
+Runs 22:30 and 06:30 HKT under `caffeinate -i`, upgrading yt-dlp first.
+Both sit in DeepSeek's off-peak window (peak is 09:00-12:00 and 14:00-18:00
+HKT, charged at double), so every run bills at the base rate.
 Deliberately not loaded — starting a recurring job is the owner's call.

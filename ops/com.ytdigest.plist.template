@@ -25,10 +25,19 @@
   </array>
 
   <!-- launchd, not cron: cron silently skips runs when the Mac sleeps. -->
+  <!-- Times are HKT (the machine's local zone) and are chosen to sit in
+       DeepSeek's off-peak window, where tokens are half the peak price.
+       Peak is 09:00-12:00 and 14:00-18:00 HKT (01:00-04:00 and 06:00-10:00 UTC).
+
+       22:30 is the main run: the last evening show ends about 20:20, so
+       captions have had two hours to appear, and everything from the trading
+       day is already long finished.
+       06:30 is the catch-up: anything whose captions landed overnight,
+       especially the 2.5-hour morning programme, gets picked up here. -->
   <key>StartCalendarInterval</key>
   <array>
-    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
   </array>
 
   <key>WorkingDirectory</key>
