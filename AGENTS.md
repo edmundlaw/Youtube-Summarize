@@ -75,6 +75,28 @@ generation. The ledger is the authority; the LLM is not.
   `None` for them. Do not default it to 1.0 to make downstream code simpler —
   the validator would then treat unverified figures as verified.
 
+## Long videos get a thinner summary — prefer the parts
+
+Measured on the same episode of 錢錢錢打到嚟, which the channel posts both as
+one 2h31m stream and as four ~35min parts. Near-identical transcript
+(35,882 vs 35,595 chars):
+
+| | full 2h31m | as 4 parts |
+|---|---|---|
+| claims | 28 | 45 |
+| figures cited | 136 | 534 |
+| verified | 98% | 99% |
+
+Almost 4x the detail at the same accuracy. One summary stretched over 2.5
+hours is thin; four summaries each covering ~35 minutes are not. Where a
+channel publishes both, filter out the full-length version — RagaFinance's
+`title_exclude` does exactly that.
+
+Practical consequence: if a single long video ever has to be summarised
+directly, chunking it and summarising each chunk will beat one pass, even
+though the whole transcript fits the context window comfortably. Fitting is
+not the same as being covered well.
+
 ## Conventions
 
 - Filenames are **always** `<video_id>`. Titles contain CJK, emoji, slashes and
