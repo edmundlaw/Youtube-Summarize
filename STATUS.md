@@ -38,6 +38,21 @@ measured here and the unverified items are mostly ledger gaps rather than model
 fabrications, M2 never gets built. If it climbs, there is now a validator to
 prove ASR actually helps rather than assuming it.
 
+## External review, 2026-07-25
+
+A cloud code review (Opus 5, clean checkout) found six defect classes. Every
+claim was reproduced locally before any fix. Fixed and pinned by regression
+tests in this commit:
+
+| | defect | consequence |
+|---|---|---|
+| P0 | compound numerals truncated (三成半→30, 兩萬五→20000, 三點五厘→5) | **false PASS** — wrong number published as verified |
+| P0b | index levels in Chinese numerals classed as clock times, which skip validation entirely | **false PASS** |
+| P1 | annotation rewrote 1200億 as ⚠︎1⚠︎200億 | safety marker manufacturing a wrong number |
+| P1b | killed stage left an orphan `running` row → no attempt count, no backoff, full-cost re-run forever | cost, indefinitely |
+| P3 | MAGNITUDES ordered 萬 before 千萬 → 5千萬 unparseable; 千蚊 became a phantom exact 1000 | false alarms + one false-PASS vector |
+| P5 | SchemaVersionError retried 3x; config prompt_version drifted from code | minor |
+
 ## Known gaps
 
 - **Ledger coverage drives false flags.** `2022年` failed because the speaker
@@ -48,8 +63,20 @@ prove ASR actually helps rather than assuming it.
   ⚠︎" rule has no input. Only ASR restores that signal.
 - **Chinese-numeral bare figures are not ledgered** (一/十 are too common in
   prose), so a summary written as `二萬億` cannot verify even when correct.
-- Map-reduce is implemented but has not been exercised — the 2h31m transcript
-  fits a single pass.
+- **Map-reduce is still unexercised and is closer than it looks.** The review
+  found the trigger compares `map_reduce_threshold_tokens` against *characters*
+  and then doubles it, so it fires at 24,000 chars — the reference transcript is
+  35,882. When it does fire it makes 6+ API calls, each with a 900s client
+  timeout, inside a stage whose own timeout is 900s total; it will be killed.
+  Not yet fixed.
+- **Validation has no locality.** `verified` means the value+unit was spoken
+  somewhere in the video, not that it was spoken about this claim. Map-reduce
+  makes misattribution materially more likely.
+- **Error text is persisted and forwarded unredacted.** `logging.py` scrubs
+  structlog events, but `stage_runs.error_text` is written raw, printed by
+  `status`, and 80 chars of it are sent to Telegram. Not yet fixed.
+- Publish sends Telegram before committing, so a kill in that window
+  double-delivers. Not yet fixed.
 
 ## To start it running
 

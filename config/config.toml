@@ -42,7 +42,9 @@ provider       = "deepseek"
 model          = "deepseek-v4-flash"
 escalate_model = "deepseek-v4-pro"   # used for the validator retry pass
 base_url       = "https://api.deepseek.com"
-prompt_version = "v1"
+# Informational only — summarize.PROMPT_VERSION is authoritative and is
+# what gets recorded in each summary's frontmatter lineage.
+prompt_version = "v2"
 # Reasoning tokens count against this budget on deepseek-v4-*; a value sized
 # only for the answer returns an empty completion.
 max_tokens     = 12000

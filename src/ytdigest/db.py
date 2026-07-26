@@ -298,6 +298,50 @@ def finish_stage_failed(
     return status
 
 
+def reap_orphan_runs(conn: sqlite3.Connection, timeout_s: int = 7200) -> int:
+    """Convert abandoned `running` rows into recorded failures.
+
+    A stage that is KILLED rather than raising — subprocess timeout, OOM kill on
+    a memory-constrained box, power loss — never reaches finish_stage_failed().
+    What survives is a stage_runs row stuck at 'running' and an unchanged
+    videos.status. Because attempts_for() counts only 'failed' rows, the attempt
+    counter never advances: max_attempts is never reached, the video never
+    becomes abandoned, no backoff ever applies, and the stage re-runs at full
+    API cost on every scheduled invocation, forever.
+
+    Called at the start of every run, before the queue is claimed.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(seconds=timeout_s)).isoformat(timespec="seconds")
+    stale = list(
+        conn.execute(
+            "SELECT id, video_id, stage FROM stage_runs "
+            "WHERE status='running' AND started_at < ?",
+            (cutoff,),
+        )
+    )
+    for row in stale:
+        with transaction(conn):
+            conn.execute(
+                "UPDATE stage_runs SET status='failed', finished_at=?, "
+                "error_class=?, error_text=? WHERE id=?",
+                (now_iso(), RETRYABLE,
+                 "stage process died without reporting (timeout, OOM or host restart)",
+                 row["id"]),
+            )
+        attempt = attempts_for(conn, row["video_id"], row["stage"])
+        permanent = attempt >= 3
+        with transaction(conn):
+            conn.execute(
+                "UPDATE stage_runs SET next_retry_at=? WHERE id=?",
+                (None if permanent else backoff_until(attempt), row["id"]),
+            )
+            conn.execute(
+                "UPDATE videos SET status=? WHERE id=?",
+                (ABANDONED if permanent else FAILED, row["video_id"]),
+            )
+    return len(stale)
+
+
 def get_artifact(conn: sqlite3.Connection, video_id: str, kind: str) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM artifacts WHERE video_id = ? AND kind = ?", (video_id, kind)

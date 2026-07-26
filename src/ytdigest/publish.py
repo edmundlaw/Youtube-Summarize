@@ -147,19 +147,31 @@ def render_markdown(
 
 
 def _annotate(text: str, checks: list[Check]) -> str:
-    """Mark each unverified figure once.
+    """Mark each unverified figure once, without corrupting any other figure.
 
-    Iterating checks directly marked a figure once per matching check, so a
-    number appearing in six places came out as ⚠︎⚠︎⚠︎⚠︎⚠︎⚠︎2022年. Deduplicate
-    first, mark longest-first so a short figure that is a substring of a longer
-    one does not corrupt it, and never double-prefix.
+    Sorting longest-first stops a short figure from consuming a longer one, but
+    it does NOT stop the short one from matching *inside* the longer one on its
+    own pass: marking {"1200億", "200億"} rewrote 1200億 as ⚠︎1⚠︎200億, and
+    {"13%", "3%"} produced ⚠︎1⚠︎3%. A wrong number reaching the page is exactly
+    what this project treats as unacceptable, so the safety annotation must not
+    manufacture one itself.
+
+    Claim non-overlapping spans first, longest figure first, then insert the
+    markers from the end so the earlier offsets stay valid.
     """
     figures = sorted(
         {c.figure for c in checks if c.verdict != "ok" and c.figure},
         key=len, reverse=True,
     )
+    claimed: list[tuple[int, int]] = []
     for figure in figures:
-        text = re.sub(f"(?<!\u26a0\ufe0e){re.escape(figure)}", f"\u26a0\ufe0e{figure}", text)
+        for match in re.finditer(re.escape(figure), text):
+            start, end = match.span()
+            if any(not (end <= s or start >= e) for s, e in claimed):
+                continue
+            claimed.append((start, end))
+    for start, end in sorted(claimed, reverse=True):
+        text = f"{text[:start]}\u26a0\ufe0e{text[start:end]}{text[end:]}"
     return text
 
 

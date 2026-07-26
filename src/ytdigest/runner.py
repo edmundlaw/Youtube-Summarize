@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import db as D
+from .db import reap_orphan_runs as db_reap
 from .config import Config
 from .logging import get_logger
 
@@ -297,10 +298,11 @@ def run_stage_inprocess(cfg: Config, conn, video_id: str, stage: str) -> None:
                   duration_ms=elapsed, error_class=exc.error_class,
                   error=str(exc)[:300], status=status)
         raise
-    except Exception as exc:  # unexpected: treat as retryable, keep the trace
+    except Exception as exc:  # unexpected: keep the trace, honour any hint
         elapsed = int((time.monotonic() - started) * 1000)
         status = D.finish_stage_failed(
-            conn, run_id, video_id, stage, elapsed, D.RETRYABLE,
+            conn, run_id, video_id, stage, elapsed,
+            getattr(exc, "error_class", D.RETRYABLE),
             f"{type(exc).__name__}: {exc}",
             int(cfg.get("runner", "max_attempts", 3)),
         )
@@ -364,6 +366,15 @@ def discover_all(cfg: Config, conn) -> int:
 def run_once(cfg: Config, conn, limit: int | None = None) -> dict:
     """Drive the queue to completion, sequentially, oldest first."""
     limit = limit or int(cfg.get("runner", "max_videos_per_run", 12))
+    # Reap stages killed by a previous run before claiming any work, or a video
+    # whose process was killed re-runs at full cost forever with no attempt
+    # counter, no backoff and no path to abandonment.
+    longest = max(
+        int(cfg.get("runner", f"timeout_{s}_s", 900)) for s in STAGE_FUNCS
+    )
+    reaped = db_reap(conn, longest)
+    if reaped:
+        log.warning("run.reaped_orphan_stages", count=reaped)
     stats = {"processed": 0, "completed": 0, "failed": 0}
     for video in D.claim_queue(conn, limit):
         video_id = video["id"]

@@ -16,7 +16,14 @@ from .interfaces import TRANSCRIPT_SCHEMA_VERSION, Segment
 
 
 class SchemaVersionError(RuntimeError):
-    pass
+    """Raised on an unknown transcript schema_version.
+
+    Carries error_class so the runner classifies it permanent: retrying a
+    version mismatch three times cannot help, and the generic handler would
+    otherwise treat it as retryable.
+    """
+
+    error_class = "permanent"
 
 
 def write_transcript(

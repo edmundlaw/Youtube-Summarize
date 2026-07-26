@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from ytdigest.numbers import (
-    BPS, CLOCK, COUNT, INDEX, MULTIPLE, PCT, SHARES, USD,
+    BPS, CLOCK, COUNT, HKD, INDEX, MULTIPLE, PCT, SHARES, USD,
     cn_to_number, find_numbers, is_financially_meaningful, parse_value,
 )
 
@@ -112,3 +112,57 @@ def test_lei_is_percent_for_hk_rates():
     found = [f for f in find_numbers("10年債息由4厘推到4.7厘") if f.unit == PCT]
     assert {f.value for f in found} == {4.0, 4.7}
     assert any(f.unit == PCT and f.value == 2 for f in find_numbers("可能要加到兩厘"))
+
+
+# --- regressions from the 2026-07-25 cloud review -------------------------
+# Each of these produced a FALSE PASS: the ledger recorded a truncated or
+# wrong value, so a summary quoting that wrong value verified clean.
+
+def test_half_unit_is_not_truncated():
+    """三成半 = 35%, not 30%. 半 was stripped before it could be parsed."""
+    assert any(f.unit == PCT and f.value == 35 for f in find_numbers("毛利率有三成半"))
+    assert any(f.unit == PCT and f.value == 3.5 for f in find_numbers("息率三厘半"))
+
+
+def test_trailing_shorthand_is_not_truncated():
+    """兩萬五 = 25,000 — the ordinary way an index level is spoken. Recording
+    20,000 let a summary saying 20000 verify against a spoken 25,000."""
+    assert any(f.value == 25000 for f in find_numbers("恒指兩萬五"))
+    assert any(f.value == 43000 for f in find_numbers("四萬三"))
+    assert cn_to_number("三千五") == 3500
+    assert cn_to_number("五百三") == 530
+    assert cn_to_number("二十三") == 23      # unchanged
+    assert cn_to_number("三萬五千") == 35000  # unchanged
+
+
+def test_chinese_decimal_point():
+    """三點五厘 = 3.5%. 點 was read as a clock separator, giving 5."""
+    assert any(f.unit == PCT and f.value == 3.5 for f in find_numbers("加到三點五厘"))
+    assert any(f.unit == MULTIPLE and f.value == 3.5 for f in find_numbers("三點五倍"))
+
+
+def test_clock_still_works():
+    assert any(f.unit == CLOCK and f.value == 9.5 for f in find_numbers("9點半開始"))
+    assert any(f.unit == CLOCK and f.value == 11.5 for f in find_numbers("十一點半開市"))
+
+
+def test_index_level_is_not_swallowed_as_a_clock_time():
+    """三千點 landed in CLOCK, and check_text skips CLOCK entirely — so a
+    fabricated index target written in Chinese numerals escaped validation."""
+    units = {f.unit for f in find_numbers("恒指目標三千點")}
+    assert CLOCK not in units
+    assert any(f.value == 3000 for f in find_numbers("恒指目標三千點"))
+
+
+def test_magnitude_suffix_ordering():
+    """MAGNITUDES had 萬 before 千萬, so 5千萬 parsed to None and could never
+    verify anything."""
+    assert any(f.value == 5 * 10**7 for f in find_numbers("派咗5千萬"))
+    assert any(f.value == 8 * 10**6 for f in find_numbers("市值8百萬"))
+    assert any(f.value == 3000 for f in find_numbers("每手3千蚊"))
+
+
+def test_bare_magnitude_word_is_not_a_currency_figure():
+    """千蚊 colloquially means 'a thousand-odd'. Recording an exact 1000 gave
+    a fabricated 1000蚊 something to match against."""
+    assert not [f for f in find_numbers("每手要千蚊") if f.unit == HKD]

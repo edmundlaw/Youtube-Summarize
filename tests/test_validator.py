@@ -135,3 +135,50 @@ def test_lenient_json_leaves_valid_json_alone():
     from ytdigest.summarize import loads_lenient
 
     assert loads_lenient('{"a": ["x", "y"], "b": {"c": 1}}') == {"a": ["x", "y"], "b": {"c": 1}}
+
+
+def test_annotation_does_not_corrupt_other_figures():
+    """Regression: marking {1200億, 200億} produced ⚠︎1⚠︎200億, and {13%, 3%}
+    produced ⚠︎1⚠︎3% — the safety annotation manufacturing a wrong number."""
+    from ytdigest.publish import _annotate
+
+    from ytdigest.validator import Check
+
+    def marks(figures):
+        return [Check(figure=f, unit="count", value=None,
+                      verdict="missing", reason="x") for f in figures]
+
+    assert _annotate("收入1200億，成本200億", marks(["1200億", "200億"])) == \
+        "收入⚠︎1200億，成本⚠︎200億"
+    assert _annotate("毛利率 13%，股息率 3%", marks(["13%", "3%"])) == \
+        "毛利率 ⚠︎13%，股息率 ⚠︎3%"
+
+
+def test_killed_stage_eventually_abandons():
+    """Regression: a killed stage left a 'running' row, so attempts_for stayed
+    0 — no backoff, no abandonment, full-cost re-run every scheduled invocation
+    forever."""
+    import pathlib
+    import tempfile
+
+    from ytdigest import db as D
+
+    db_path = pathlib.Path(tempfile.mkdtemp()) / "t.db"
+    conn = D.open_db(db_path, pathlib.Path("migrations"))
+    conn.execute("INSERT INTO channels (id,title,added_at) VALUES ('UC1','c',?)",
+                 (D.now_iso(),))
+    conn.execute(
+        "INSERT INTO videos (id,channel_id,title,published_at,discovered_at,status)"
+        " VALUES ('v1','UC1','t','2026-01-01','2026-01-01',?)", (D.NORMALIZED,))
+
+    for _ in range(3):
+        D.start_stage(conn, "v1", "summarize",
+                      D.attempts_for(conn, "v1", "summarize") + 1)
+        conn.execute("UPDATE stage_runs SET started_at='2020-01-01T00:00:00+00:00'"
+                     " WHERE status='running'")
+        assert D.reap_orphan_runs(conn, 900) == 1
+
+    assert D.attempts_for(conn, "v1", "summarize") == 3
+    status = conn.execute("SELECT status FROM videos WHERE id='v1'").fetchone()["status"]
+    assert status == D.ABANDONED
+    assert D.claim_queue(conn, 10) == []
