@@ -210,3 +210,46 @@ def test_prompt_forbids_off_roster_attribution():
     assert "羅家聰 KC 博士" in prompt
     assert "宣傳片" in prompt          # warns about trailers naming other hosts
     assert _system_prompt([], "yue", []).count("主持") >= 1
+
+
+def test_transport_errors_are_retried_in_place():
+    """A dropped socket used to fail the whole stage, discarding the first
+    generation that had already been paid for. It killed both videos of a
+    two-video batch at the validator-retry step."""
+    import httpx
+
+    from ytdigest.config import load_config
+    from ytdigest.summarize import DeepSeek
+
+    engine = DeepSeek.__new__(DeepSeek)
+    engine.cfg = load_config()
+    engine.id = "stub"
+    engine.base_url = "https://example.invalid"
+    engine._key = "x"
+
+    calls = {"n": 0}
+
+    def flaky(system, user, max_tokens, timeout):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise httpx.RemoteProtocolError("peer closed connection")
+        return '{"ok": true}'
+
+    engine._once = flaky
+    assert engine.complete("s", "u", 10, timeout=1) == '{"ok": true}'
+    assert calls["n"] == 3
+
+
+def test_long_video_timestamps_are_not_truncated():
+    """Regression: _mmss took value[-5:], so on a 2.5-hour show "105:13"
+    rendered as "05:13" — every citation past 100 minutes pointed 100 minutes
+    too early."""
+    from ytdigest.publish import _mmss
+
+    assert _mmss("105:13") == "1:45:13"
+    assert _mmss("101:34") == "1:41:34"
+    assert _mmss("78:35") == "1:18:35"
+    assert _mmss("42:34") == "42:34"
+    assert _mmss("01:34:29") == "1:34:29"
+    assert _mmss(9074) == "2:31:14"
+    assert _mmss(125.0) == "02:05"

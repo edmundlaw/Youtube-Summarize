@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import httpx
 
@@ -47,7 +48,31 @@ class DeepSeek:
         self._key = cfg.require_secret("DEEPSEEK_API_KEY")
 
     def complete(self, system: str, user: str, max_tokens: int = 10000,
-                 timeout: float = 300.0) -> str:
+                 timeout: float = 300.0, attempts: int = 3) -> str:
+        """Call the model, retrying transport-level failures in place.
+
+        DeepSeek drops the connection mid-response often enough to matter
+        ("peer closed connection without sending complete message body").
+        Observed on three separate runs, and it killed both videos of a
+        two-video batch at the validator-retry step. Letting it propagate
+        fails the whole stage and discards the first generation, which has
+        already been paid for — so a transient socket error costs a full
+        re-run of everything.
+        """
+        last: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._once(system, user, max_tokens, timeout)
+            except (httpx.RemoteProtocolError, httpx.ReadError,
+                    httpx.ConnectError, httpx.ReadTimeout, httpx.WriteError) as exc:
+                last = exc
+                if attempt < attempts:
+                    time.sleep(2 ** attempt)
+        raise StageError(
+            f"deepseek transport failed after {attempts} attempts: {last}", RETRYABLE
+        )
+
+    def _once(self, system: str, user: str, max_tokens: int, timeout: float) -> str:
         try:
             response = httpx.post(
                 f"{self.base_url}/chat/completions",
@@ -70,6 +95,10 @@ class DeepSeek:
             # 429 and 5xx are worth retrying; a 400 means our request is wrong.
             klass = RETRYABLE if status == 429 or status >= 500 else "permanent"
             raise StageError(f"deepseek {status}: {exc.response.text[:300]}", klass) from exc
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError,
+                httpx.ReadTimeout, httpx.WriteError):
+            # Must reach complete()'s retry loop, not be wrapped here.
+            raise
         except Exception as exc:
             raise StageError(f"deepseek request failed: {exc}", RETRYABLE) from exc
 
@@ -209,6 +238,11 @@ def loads_lenient(text: str) -> dict:
     candidate = "".join(repaired)
     try:
         return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+    # A literal newline inside a string is the other break the model produces.
+    try:
+        return json.loads(candidate, strict=False)
     except json.JSONDecodeError as exc:
         raise StageError(
             f"model returned unparseable JSON even after repair: {exc}", RETRYABLE

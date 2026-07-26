@@ -21,9 +21,34 @@ TG_LIMIT = 4096
 
 
 def _mmss(value: str | float) -> str:
-    if isinstance(value, str):
-        return value[-5:] if len(value) > 5 else value
-    return f"{int(value) // 60:02d}:{int(value) % 60:02d}"
+    """Render a timestamp, preserving anything past the hour.
+
+    This took value[-5:] on strings, which silently truncated any timestamp
+    over 99:59: the model's "105:13" rendered as "05:13" and "101:34" as
+    "01:34". On a 2.5-hour show — the daily programme this tool exists for —
+    every citation past the 100-minute mark pointed 100 minutes too early, so
+    a reader clicking through landed in the wrong segment entirely.
+    """
+    if isinstance(value, (int, float)):
+        total = int(value)
+    else:
+        text = str(value).strip()
+        if not text:
+            return ""
+        parts = text.split(":")
+        try:
+            numbers = [int(p) for p in parts]
+        except ValueError:
+            return text
+        if len(numbers) == 3:
+            total = numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
+        elif len(numbers) == 2:
+            total = numbers[0] * 60 + numbers[1]
+        else:
+            total = numbers[0]
+    if total >= 3600:
+        return f"{total // 3600}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+    return f"{total // 60:02d}:{total % 60:02d}"
 
 
 def _mark(figure: str, checks: list[Check]) -> str:
