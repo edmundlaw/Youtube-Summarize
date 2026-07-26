@@ -11,7 +11,9 @@ out_dir  = "out"
 timeout_fetch_s      = 900
 timeout_transcribe_s = 7200
 timeout_normalize_s  = 300
-timeout_summarize_s  = 900
+# Must exceed (chunks + 1) x the per-call timeout in summarize.py (300s),
+# or a map-reduce run is killed mid-flight and re-runs at full cost.
+timeout_summarize_s  = 3600
 timeout_publish_s     = 120
 max_attempts         = 3
 # Oldest-first, and never more than this many videos per invocation.
@@ -48,9 +50,10 @@ prompt_version = "v2"
 # Reasoning tokens count against this budget on deepseek-v4-*; a value sized
 # only for the answer returns an empty completion.
 max_tokens     = 12000
-# Above this many transcript tokens, use map-reduce instead of a single pass.
-map_reduce_threshold_tokens = 12000
-chunk_tokens                = 8000
+# Above this many estimated TOKENS (not characters), use map-reduce.
+# A 2.5-hour Cantonese show is ~43k tokens, so it splits into 3 chunks.
+map_reduce_threshold_tokens = 40000
+chunk_tokens                = 20000
 
 [publish]
 # Telegram credentials come from .env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID

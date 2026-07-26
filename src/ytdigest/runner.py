@@ -133,6 +133,7 @@ def stage_normalize(cfg: Config, conn, video: dict) -> Path:
     data = read_transcript(Path(artifact["path"]))
     segments = normalize_segments(data["segments"])
     ledger = build_ledger(segments)
+    content = segments
 
     with D.transaction(conn):
         conn.execute("DELETE FROM number_ledger WHERE video_id=?", (video["id"],))
@@ -149,13 +150,13 @@ def stage_normalize(cfg: Config, conn, video: dict) -> Path:
             (
                 video["id"], data["schema_version"], data["source"],
                 data.get("model", {}).get("id"), data.get("model", {}).get("params_hash"),
-                dominant_lang(segments), len(segments),
-                _mean_confidence(segments), D.now_iso(),
+                dominant_lang(content), len(content),
+                _mean_confidence(content), D.now_iso(),
             ),
         )
 
     out = cfg.data_dir / "normalized" / f"{video['id']}.json"
-    write_normalized(out, video["id"], segments, ledger)
+    write_normalized(out, video["id"], content, ledger)
     log.info("normalize.ledger", video_id=video["id"], entries=len(ledger))
     return out
 
@@ -182,7 +183,8 @@ def stage_summarize(cfg: Config, conn, video: dict) -> Path:
 
     transcript_artifact = D.get_artifact(conn, video["id"], "transcript")
     payload, state, checks = summarize(
-        cfg, segments, ledger, data.get("dominant_lang", "yue"), log
+        cfg, segments, ledger, data.get("dominant_lang", "yue"), log,
+        title=video.get("title", ""),
     )
 
     out = cfg.data_dir / "normalized" / f"{video['id']}.summary.json"

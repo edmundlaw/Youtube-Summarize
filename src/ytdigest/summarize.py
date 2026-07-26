@@ -13,6 +13,7 @@ Two things here earn their complexity:
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 
@@ -45,7 +46,8 @@ class DeepSeek:
         self.base_url = cfg.get("summarize", "base_url", "https://api.deepseek.com")
         self._key = cfg.require_secret("DEEPSEEK_API_KEY")
 
-    def complete(self, system: str, user: str, max_tokens: int = 10000) -> str:
+    def complete(self, system: str, user: str, max_tokens: int = 10000,
+                 timeout: float = 300.0) -> str:
         try:
             response = httpx.post(
                 f"{self.base_url}/chat/completions",
@@ -59,7 +61,7 @@ class DeepSeek:
                     "response_format": {"type": "json_object"},
                     "max_tokens": max_tokens,
                 },
-                timeout=900,
+                timeout=timeout,
             )
             response.raise_for_status()
             payload = response.json()
@@ -82,11 +84,46 @@ class DeepSeek:
         return content
 
 
-def _system_prompt(ledger: list[LedgerEntry], lang: str) -> str:
+def hosts_from_title(title: str) -> list[str]:
+    """Names listed after 主持 / 主持人 in the video title.
+
+    Needed because a station trailer for another programme runs mid-episode and
+    names that programme's host. On a real 55-minute episode the summariser
+    picked the name up from the advert and attributed three claims to him at
+    timestamps where he is never mentioned — the numbers verified clean, so
+    nothing downstream could catch it. Wrong attribution is fatal to a
+    prediction track record: it credits calls to someone who never made them.
+    """
+    match = re.search(r"主持人?\s*[:：]\s*(.+)$", title)
+    if not match:
+        return []
+    tail = re.split(r"[|｜\[]", match.group(1))[0]
+    names: list[str] = []
+    for part in re.split(r"[、,，/／&]|\s+同\s+", tail):
+        part = part.strip()
+        if not part:
+            continue
+        # 沈振盈(沈大師): the parenthesised alias is the name actually spoken,
+        # so both forms belong in the roster.
+        alias = re.search(r"[(（]([^)）]+)[)）]", part)
+        base = re.sub(r"[(（][^)）]*[)）]", "", part).strip()
+        if base:
+            names.append(base)
+        if alias and alias.group(1).strip():
+            names.append(alias.group(1).strip())
+    return names
+
+
+def _system_prompt(ledger: list[LedgerEntry], lang: str,
+                   hosts: list[str] | None = None) -> str:
     target = "English" if lang == "en" else "繁體中文（香港）"
     glossary = ", ".join(load_glossary())
     allowed = "\n".join(
         f"  - {e.raw_text}  [{_mmss(e.start_s)}]" for e in _dedupe(ledger)[:120]
+    )
+    host_rule = (
+        "呢一集嘅主持只有：" + "、".join(hosts) + "。"
+        if hosts else "片名冇列出主持，所以一律寫「主持」，唔好用任何人名。"
     )
     return f"""你為香港投資者提煉財經影片。輸出語言：{target}。
 
@@ -99,6 +136,12 @@ def _system_prompt(ledger: list[LedgerEntry], lang: str) -> str:
   ✗「討論AI泡沫」✗「分析港股走勢」✗「提醒投資者注意風險」
 測試：一句話如果可以原封不動放喺任何一日任何一集，刪咗佢。
 要寫：邊個講、具體主張、佢嘅理由。主持之間有分歧要特別指出。
+
+【講者鐵律】
+{host_rule}
+唔准將主張歸咎於名單以外嘅人。節目中間會播其他節目嘅宣傳片，
+入面會提到第二個節目嘅主持名。嗰啲名唔屬於呢一集，唔可以當佢哋喺度講嘢。
+如果唔肯定邊個講，就寫「主持」，唔好估。
 
 【數字鐵律】
 你只可以使用以下喺字幕入面真正出現過嘅數字：
@@ -188,6 +231,19 @@ def _transcript_text(segments) -> str:
     return "\n".join(f"[{_mmss(s.start)}] {s.text}" for s in segments)
 
 
+def estimate_tokens(text: str) -> int:
+    """Rough token count for a mixed CJK/Latin transcript.
+
+    CJK is close to one token per character; Latin runs about four characters
+    per token. The map-reduce trigger previously compared a *character* count
+    against a threshold named in tokens and then doubled it, so it fired at
+    24,000 characters — a quarter of the intended size for English, and well
+    below a routine 2.5-hour Cantonese show.
+    """
+    cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    return cjk + max(0, len(text) - cjk) // 4
+
+
 def _flatten(payload: dict) -> str:
     """Every free-text field the validator must inspect."""
     parts: list[str] = []
@@ -210,15 +266,16 @@ def summarize(
     ledger: list[LedgerEntry],
     lang: str,
     log=None,
+    title: str = "",
 ) -> tuple[dict, str, list]:
     """Generate, validate, retry once, and return (payload, state, checks)."""
     engine = DeepSeek(cfg)
-    system = _system_prompt(ledger, lang)
+    system = _system_prompt(ledger, lang, hosts_from_title(title))
     body = _transcript_text(segments)
     max_tokens = int(cfg.get("summarize", "max_tokens", 10000))
 
-    threshold = int(cfg.get("summarize", "map_reduce_threshold_tokens", 12000))
-    if len(body) > threshold * 2:
+    threshold = int(cfg.get("summarize", "map_reduce_threshold_tokens", 40000))
+    if estimate_tokens(body) > threshold:
         body = _map_reduce(engine, system, segments, max_tokens, cfg, log)
 
     payload = loads_lenient(engine.complete(system, body, max_tokens))
@@ -254,13 +311,13 @@ def _map_reduce(engine: DeepSeek, system: str, segments, max_tokens: int,
     The ledger travels in `system`, so it is present at both levels and the
     reduce step never recalls a number from a map-level summary.
     """
-    size = int(cfg.get("summarize", "chunk_tokens", 8000))
+    size = int(cfg.get("summarize", "chunk_tokens", 20000))
     chunks: list[list] = []
     current: list = []
     length = 0
     for seg in segments:
         current.append(seg)
-        length += len(seg.text)
+        length += estimate_tokens(seg.text)
         if length >= size:
             chunks.append(current)
             current, length = [], 0
@@ -272,10 +329,20 @@ def _map_reduce(engine: DeepSeek, system: str, segments, max_tokens: int,
 
     partials: list[str] = []
     for index, chunk in enumerate(chunks):
-        text = engine.complete(
-            system + "\n\n（呢個係影片其中一段，先做分段摘要）",
-            _transcript_text(chunk),
-            max_tokens,
-        )
+        try:
+            text = engine.complete(
+                system + "\n\n（呢個係影片其中一段，先做分段摘要）",
+                _transcript_text(chunk),
+                max_tokens,
+            )
+        except StageError as exc:
+            # One failed chunk must not discard the ones already paid for.
+            if log:
+                log.warning("summarize.chunk_failed", chunk=index + 1,
+                            of=len(chunks), error=str(exc)[:200])
+            if not partials:
+                raise
+            partials.append(f"--- 第{index + 1}段 ---\n（呢一段摘要失敗，內容從缺）")
+            continue
         partials.append(f"--- 第{index + 1}段 ---\n{text}")
     return "\n\n".join(partials)

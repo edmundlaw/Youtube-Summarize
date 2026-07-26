@@ -82,6 +82,15 @@ class LedgerEntry:
         )
 
 
+# NOTE: structural promo detection was tried and removed. RagaFinance airs
+# trailers for its other shows mid-episode, and those trailers name a different
+# show's host. Detecting them by verbatim repetition does not work: the ASR
+# transcribes the same advert differently each airing — on a real file the two
+# airings shared only 6 identical characters. Attribution is constrained at the
+# prompt level instead, from the host list in the video title. See
+# summarize.hosts_from_title().
+
+
 def normalize_segments(segments: list[Segment]) -> list[Segment]:
     out: list[Segment] = []
     for seg in segments:

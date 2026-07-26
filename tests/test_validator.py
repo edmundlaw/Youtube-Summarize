@@ -182,3 +182,31 @@ def test_killed_stage_eventually_abandons():
     status = conn.execute("SELECT status FROM videos WHERE id='v1'").fetchone()["status"]
     assert status == D.ABANDONED
     assert D.claim_queue(conn, 10) == []
+
+
+def test_hosts_are_taken_from_the_title():
+    """A station trailer for another programme runs mid-episode and names that
+    programme's host. The summariser picked the name up from the advert and
+    attributed three claims to him at timestamps where he is never mentioned;
+    the numbers verified clean, so nothing downstream caught it."""
+    from ytdigest.summarize import hosts_from_title
+
+    hosts = hosts_from_title(
+        "CC Raga Finance：一名經人 20260723：主持：羅家聰 KC 博士、Eugene 羅尚沛、Debby 顧芷筠"
+    )
+    assert hosts == ["羅家聰 KC 博士", "Eugene 羅尚沛", "Debby 顧芷筠"]
+    assert "沈振盈" not in hosts and "沈大師" not in hosts
+
+    # A parenthesised alias is the form actually spoken, so keep both.
+    assert hosts_from_title("錢錢錢打到嚟 - 主持：沈振盈(沈大師)、蔡康年") == \
+        ["沈振盈", "沈大師", "蔡康年"]
+    assert hosts_from_title("no host listed") == []
+
+
+def test_prompt_forbids_off_roster_attribution():
+    from ytdigest.summarize import _system_prompt
+
+    prompt = _system_prompt([], "yue", ["羅家聰 KC 博士"])
+    assert "羅家聰 KC 博士" in prompt
+    assert "宣傳片" in prompt          # warns about trailers naming other hosts
+    assert _system_prompt([], "yue", []).count("主持") >= 1

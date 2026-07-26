@@ -63,15 +63,14 @@ tests in this commit:
   ⚠︎" rule has no input. Only ASR restores that signal.
 - **Chinese-numeral bare figures are not ledgered** (一/十 are too common in
   prose), so a summary written as `二萬億` cannot verify even when correct.
-- **Map-reduce is still unexercised and is closer than it looks.** The review
-  found the trigger compares `map_reduce_threshold_tokens` against *characters*
-  and then doubles it, so it fires at 24,000 chars — the reference transcript is
-  35,882. When it does fire it makes 6+ API calls, each with a 900s client
-  timeout, inside a stage whose own timeout is 900s total; it will be killed.
-  Not yet fixed.
 - **Validation has no locality.** `verified` means the value+unit was spoken
-  somewhere in the video, not that it was spoken about this claim. Map-reduce
-  makes misattribution materially more likely.
+  somewhere in the video, not that it was spoken about *this* claim. The
+  speaker half of this is now constrained (host roster, below); the subject
+  half is not — a real 4000 spoken about gold can still be attached to the
+  wrong instrument and verify clean.
+- **Speaker attribution is constrained but not validated.** The prompt is given
+  the host list and told trailers name outsiders; nothing checks the output
+  against it the way the ledger checks numbers.
 - **Error text is persisted and forwarded unredacted.** `logging.py` scrubs
   structlog events, but `stage_runs.error_text` is written raw, printed by
   `status`, and 80 chars of it are sent to Telegram. Not yet fixed.
