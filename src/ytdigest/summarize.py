@@ -344,7 +344,18 @@ def summarize(
     if estimate_tokens(body) > threshold:
         body = _map_reduce(engine, system, segments, max_tokens, cfg, log)
 
-    payload = loads_lenient(engine.complete(system, body, max_tokens))
+    # Malformed JSON from the model is non-deterministic — the same input
+    # parses fine on the next attempt. Regenerating immediately is far cheaper
+    # than failing the stage and waiting for the next scheduled run.
+    for attempt in range(1, 4):
+        try:
+            payload = loads_lenient(engine.complete(system, body, max_tokens))
+            break
+        except StageError:
+            if attempt == 3:
+                raise
+            if log:
+                log.warning("summarize.unparseable_json", attempt=attempt)
     checks = check_text(_flatten(payload), ledger)
     state = verdict(checks)
 

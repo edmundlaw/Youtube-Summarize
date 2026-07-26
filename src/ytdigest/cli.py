@@ -483,8 +483,13 @@ def doctor() -> None:
         check("TELEGRAM_CHAT_ID", cfg.secret("TELEGRAM_CHAT_ID") is not None)
 
     click.echo("scheduling")
-    label = "com.ytdigest"
-    plist = Path.home() / f"Library/LaunchAgents/{label}.plist"
+    # Accept either the generic label or a namespaced one, since installs on a
+    # shared machine usually follow that machine's own naming convention.
+    home = Path.home() / "Library/LaunchAgents"
+    label, plist = "com.ytdigest", home / "com.ytdigest.plist"
+    for candidate in sorted(home.glob("*ytdigest*.plist")):
+        label, plist = candidate.stem, candidate
+        break
     check("LaunchAgent installed", plist.exists(), str(plist))
     if plist.exists():
         import subprocess
