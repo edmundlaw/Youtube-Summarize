@@ -166,3 +166,26 @@ def test_bare_magnitude_word_is_not_a_currency_figure():
     """千蚊 colloquially means 'a thousand-odd'. Recording an exact 1000 gave
     a fabricated 1000蚊 something to match against."""
     assert not [f for f in find_numbers("每手要千蚊") if f.unit == HKD]
+
+
+def test_compound_chinese_magnitudes_are_not_multiplied_twice():
+    """Regression: magnitude-suffix stripping fought the compositional parser.
+    五萬三千 (53,000) came out 53,000,000 and 二萬八千二百 (28,200) came out
+    100x too large — a wrong value written to the ledger as authoritative."""
+    assert parse_value("五萬三千") == 53000
+    assert parse_value("二萬八千二百") == 28200
+    assert parse_value("三萬五千") == 35000
+    # the mixed Arabic+Chinese forms that suffix-stripping exists for
+    assert parse_value("5千萬") == 5 * 10**7
+    assert parse_value("39.6666萬億") == pytest.approx(39.6666 * 10**12)
+
+
+def test_figures_do_not_span_flattened_fields():
+    """Regression: patterns used \\s*, which crossed the newline joining two
+    unrelated summary fields — a figure ending one field joined the 股 opening
+    the next, producing phantom '165\\n股' entries that could never verify."""
+    from ytdigest.summarize import _flatten
+
+    flat = _flatten({"numbers": [{"figure": "165", "context": ""}],
+                     "theses": [{"thesis": "股份分析", "reasoning": ""}]})
+    assert not [f for f in find_numbers(flat) if "\n" in f.raw]

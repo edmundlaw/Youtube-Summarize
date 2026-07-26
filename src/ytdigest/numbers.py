@@ -107,6 +107,14 @@ def parse_value(raw: str) -> float | None:
     if not raw:
         return None
 
+    # A pure Chinese numeral is compositional and must be parsed whole.
+    # Stripping a magnitude suffix off it double-counts: 五萬三千 became
+    # 五萬三 x 1000 = 53,000,000 instead of 53,000, and 二萬八千二百 came out
+    # 100x too large. Suffix-stripping exists only for the mixed forms
+    # (3千蚊, 5千萬, 39.6666萬億) where the head is Arabic.
+    if all(c in _CN_NUM or c in "半幾點" for c in raw):
+        return _finish(raw, 1.0)
+
     multiplier = 1.0
     for suffix, scale in MAGNITUDES:
         if raw.endswith(suffix):
@@ -117,7 +125,12 @@ def parse_value(raw: str) -> float | None:
     raw = raw.strip()
     if not raw:
         return None
+    return _finish(raw, multiplier)
 
+
+def _finish(raw: str, multiplier: float) -> float | None:
+
+    """Apply 半 / 幾 / 點 handling, then parse."""
     # 半 is half of ONE unit, not half of the magnitude: 三成半 = 3.5 成 = 35%,
     # 三厘半 = 3.5%. This must run before any other parsing, and 半 must not
     # have been swallowed by unit-stripping first — that produced a ledger

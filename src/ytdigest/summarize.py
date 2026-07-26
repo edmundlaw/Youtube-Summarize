@@ -148,8 +148,10 @@ def _system_prompt(ledger: list[LedgerEntry], lang: str,
     target = "English" if lang == "en" else "繁體中文（香港）"
     glossary = ", ".join(load_glossary())
     allowed = "\n".join(
-        f"  - {e.raw_text}  [{_mmss(e.start_s)}]" for e in _dedupe(ledger)[:120]
+        f"  - {e.raw_text}  [{_mmss(e.start_s)}]" for e in _sample_ledger(ledger, 400)
     )
+    span = max((e.start_s for e in ledger), default=0.0)
+    duration = _mmss(span) if span else "未知"
     host_rule = (
         "呢一集嘅主持只有：" + "、".join(hosts) + "。"
         if hosts else "片名冇列出主持，所以一律寫「主持」，唔好用任何人名。"
@@ -165,6 +167,11 @@ def _system_prompt(ledger: list[LedgerEntry], lang: str,
   ✗「討論AI泡沫」✗「分析港股走勢」✗「提醒投資者注意風險」
 測試：一句話如果可以原封不動放喺任何一日任何一集，刪咗佢。
 要寫：邊個講、具體主張、佢嘅理由。主持之間有分歧要特別指出。
+
+【覆蓋鐵律】
+呢條片長 {duration}。你要覆蓋成條片，由頭到尾。
+唔好淨係講頭三十分鐘就算數 —— 好多節目最重要嘅分析喺後半段。
+每一個大段落（大約每二十分鐘）至少要有一個論點或者可操作內容。
 
 【講者鐵律】
 {host_rule}
@@ -261,6 +268,27 @@ def _dedupe(ledger: list[LedgerEntry]) -> list[LedgerEntry]:
     return out
 
 
+def _sample_ledger(ledger: list[LedgerEntry], limit: int) -> list[LedgerEntry]:
+    """Choose which figures to show the model, covering the whole video.
+
+    This used to be a plain [:120] on a chronologically ordered ledger. On a
+    2.5-hour show that cut at minute 122 and hid the final 61 figures — and
+    since the prompt tells the model those are the ONLY numbers it may use, it
+    was structurally forbidden from discussing the last half hour. That half
+    hour was the densest part of the programme (71 figures in one 15-minute
+    bucket against 9 in the opening), so the digest silently omitted the
+    substance of the episode.
+
+    When the ledger fits, show all of it. When it does not, sample evenly
+    across the timeline so every part of the video stays reachable.
+    """
+    entries = _dedupe(ledger)
+    if len(entries) <= limit:
+        return entries
+    stride = len(entries) / limit
+    return [entries[int(i * stride)] for i in range(limit)]
+
+
 def _transcript_text(segments) -> str:
     return "\n".join(f"[{_mmss(s.start)}] {s.text}" for s in segments)
 
@@ -291,7 +319,11 @@ def _flatten(payload: dict) -> str:
         parts.append(str(item.get("risk", "")))
     for item in payload.get("numbers", []):
         parts += [str(item.get("figure", "")), str(item.get("context", ""))]
-    return "\n".join(parts)
+    # A bare newline lets a pattern span two unrelated fields: a figure
+    # ending one field joined the 股 opening the next, yielding phantom
+    # "165\n股" entries that can never verify. A non-space separator
+    # blocks the match.
+    return "\n。\n".join(p for p in parts if p.strip())
 
 
 def summarize(
@@ -320,8 +352,12 @@ def summarize(
         if log:
             log.warning("summarize.retry", offenders=offending(checks))
         instruction = retry_instruction(checks, ledger)
-        escalate = cfg.get("summarize", "escalate_model", None)
-        retry_engine = DeepSeek(cfg, escalate) if escalate else engine
+        # Retry on the SAME model. Escalating to deepseek-v4-pro was tried and
+        # dropped: on a full-transcript retry it dropped the connection on all
+        # three attempts for both sample videos, and it translates the
+        # protected glossary terms that flash preserves — so it was both more
+        # fragile and lower quality on the one axis that matters here.
+        retry_engine = engine
         payload = loads_lenient(
             retry_engine.complete(system, f"{body}\n\n---\n{instruction}", max_tokens)
         )

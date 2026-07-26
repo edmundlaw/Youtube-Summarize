@@ -253,3 +253,25 @@ def test_long_video_timestamps_are_not_truncated():
     assert _mmss("01:34:29") == "1:34:29"
     assert _mmss(9074) == "2:31:14"
     assert _mmss(125.0) == "02:05"
+
+
+def test_ledger_sampling_covers_the_whole_video():
+    """Regression: the ledger was truncated with a chronological [:120]. On a
+    2.5-hour show that cut at minute 122 and hid the final 61 figures, and
+    since the prompt says those are the only numbers the model may use, it was
+    forbidden from discussing the densest part of the programme."""
+    from ytdigest.normalize import LedgerEntry
+    from ytdigest.summarize import _sample_ledger
+
+    ledger = [
+        LedgerEntry(raw_text=f"{i}億", normalized=str(i), unit="count",
+                    segment_id=i, start_s=float(i * 30), confidence=None,
+                    context="x")
+        for i in range(500)
+    ]
+    sampled = _sample_ledger(ledger, 400)
+    assert len(sampled) == 400
+    # the tail of the video must still be represented
+    assert max(e.start_s for e in sampled) > ledger[-1].start_s * 0.95
+    # and when it fits, nothing is dropped
+    assert len(_sample_ledger(ledger[:50], 400)) == 50
