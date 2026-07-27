@@ -334,3 +334,23 @@ def test_speaker_canonicalisation():
     assert canonical_speaker("Raga Finance") is None
     assert canonical_speaker("主持") is None
     assert canonical_speaker(None) is None
+
+
+def test_conditional_calls_are_not_flattened_to_immediate():
+    """KC on SK Hynix: 「如果他彈的話 我覺得應該是沽的」 — sell IF it bounces.
+    Stored as a bare short, a backtest enters at the moment he spoke, which is
+    exactly what he said not to do."""
+    from ytdigest.views import parse_views
+
+    views = parse_views({"views": [
+        {"instrument_raw": "SK海力士", "direction": "short",
+         "thesis": "仲未跌夠，如果佢彈嘅話就應該沽", "ts": "18:58"},
+        {"instrument_raw": "恒指", "direction": "long",
+         "thesis": "跌穿24000先入市", "ts": "05:00"},
+        {"instrument_raw": "金", "direction": "long",
+         "thesis": "而家就可以買入", "ts": "10:00"},
+    ]}, [])
+    assert views[0].entry_basis == "on_rally"
+    assert views[0].stance == "bearish"
+    assert views[1].entry_basis == "on_break"
+    assert views[2].entry_basis == "unspecified"

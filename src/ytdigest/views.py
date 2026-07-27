@@ -29,6 +29,9 @@ DIRECTIONS = {"long", "short", "neutral", "avoid", "exit"}
 #: were a person.
 _GENERIC_SPEAKER = {"主持", "主持人", "嘉賓", "host", "guest", "主播"}
 HORIZONS = {"intraday", "days", "weeks", "months", "quarters", "year"}
+ENTRY_BASES = {"immediate", "on_rally", "on_dip", "on_break", "on_confirmation",
+               "unspecified"}
+STANCES = {"bullish", "bearish", "neutral"}
 
 #: Rough horizon lengths, used to compute when a call can be judged.
 HORIZON_DAYS = {
@@ -54,6 +57,9 @@ class View:
     level_verified: bool
     horizon: str | None
     start_s: float
+    entry_basis: str = "unspecified"
+    condition: str | None = None
+    stance: str | None = None
 
 
 # --- speaker canonicalisation ----------------------------------------------
@@ -277,8 +283,41 @@ def parse_views(payload: dict, hosts: list[str] | None = None) -> list[View]:
             level_verified=False,
             horizon=horizon,
             start_s=_offset(item.get("ts")),
+            entry_basis=_basis(item),
+            condition=str(item.get("condition") or "").strip() or None,
+            stance=(str(item.get("stance")).strip().lower()
+                    if str(item.get("stance") or "").strip().lower() in STANCES
+                    else _implied_stance(direction)),
         ))
     return out
+
+
+#: Trigger words that make a call conditional. Recording such a call as an
+#: immediate one would backtest an entry the speaker explicitly warned against.
+_BASIS_HINTS = [
+    ("on_rally", ["反彈", "彈起", "彈上", "回升", "if it bounces", "彈嘅話", "彈的話"]),
+    ("on_dip", ["回落", "跌到", "調整到", "回調", "落到"]),
+    ("on_break", ["跌穿", "升穿", "突破", "破位", "穿咗"]),
+    ("on_confirmation", ["確認", "見到訊號", "有信號", "企穩"]),
+]
+
+
+def _basis(item: dict) -> str:
+    """Decide whether the call is immediate or waits for a trigger."""
+    stated = str(item.get("entry_basis") or "").strip().lower()
+    if stated in ENTRY_BASES:
+        return stated
+    haystack = " ".join(str(item.get(k) or "") for k in
+                        ("condition", "thesis", "reasoning"))
+    for basis, hints in _BASIS_HINTS:
+        if any(h in haystack for h in hints):
+            return basis
+    return "unspecified"
+
+
+def _implied_stance(direction: str) -> str | None:
+    return {"long": "bullish", "short": "bearish", "avoid": "bearish",
+            "exit": "bearish", "neutral": "neutral"}.get(direction)
 
 
 def _offset(ts) -> float:
@@ -329,8 +368,9 @@ def store_views(conn, video: dict, views: list[View], summary_id: int | None,
                 "INSERT INTO views (video_id, channel_id, speaker, stated_at, start_s, "
                 " instrument, instrument_raw, asset_class, direction, conviction, thesis, "
                 " reasoning, level_type, level_value, level_unit, ledger_id, level_verified, "
-                " horizon, horizon_ends_at, outcome, summary_id, prompt_version, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?) "
+                " horizon, horizon_ends_at, outcome, summary_id, prompt_version, created_at, "
+                " entry_basis, condition, stance) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?) "
                 "ON CONFLICT DO UPDATE SET "
                 "  thesis=excluded.thesis, reasoning=excluded.reasoning, "
                 "  instrument=excluded.instrument, level_verified=excluded.level_verified, "
@@ -340,7 +380,8 @@ def store_views(conn, video: dict, views: list[View], summary_id: int | None,
                  symbol, view.instrument_raw, asset_class, view.direction,
                  view.conviction, view.thesis, view.reasoning, view.level_type,
                  view.level_value, view.level_unit, ledger_id, int(verified),
-                 view.horizon, ends_at, summary_id, prompt_version, now_iso()),
+                 view.horizon, ends_at, summary_id, prompt_version, now_iso(),
+                 view.entry_basis, view.condition, view.stance),
             )
             written += 1
     return written

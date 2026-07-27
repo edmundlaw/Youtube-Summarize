@@ -200,13 +200,20 @@ JSON 字串值裏面唔好用半形雙引號 \" ，要引用字幕原文就用�
   level_value    : 只可以填字幕入面真正出現過嘅數字，冇就留空
   level_type     : target / support / resistance / entry / stop / valuation
   horizon        : intraday / days / weeks / months / quarters / year
+  entry_basis    : immediate（而家就做）/ on_rally（等彈先沽）/ on_dip（等跌先買）/
+                   on_break（穿位先做）/ on_confirmation（等確認）/ unspecified
+  condition      : 如果係有條件先做，用主持原話寫低個條件，例如「如果佢彈嘅話」
+  stance         : bullish / bearish / neutral（佢對呢個標的嘅基本睇法）
+【重要】主持話「等反彈先沽」同「而家沽」係兩件事。
+唔好將有條件嘅判斷寫成即時判斷 —— 要照佢講嘅條件記低。
   speaker        : 一定要係上面名單入面嘅主持
 純粹講宏觀背景、冇具體判斷嘅，唔好當 view。
 
 輸出 JSON：
 {{"views":[{{"ts":"MM:SS","speaker":"","instrument_raw":"","direction":"",
   "conviction":"high|medium|low","thesis":"","reasoning":"",
-  "level_type":"","level_value":null,"level_unit":"hkd|usd|pct|points","horizon":""}}],
+  "level_type":"","level_value":null,"level_unit":"hkd|usd|pct|points","horizon":"",
+  "entry_basis":"","condition":"","stance":""}}],
  "actionable":[{{"ts":"MM:SS","ticker":"如有","claim":""}}],
  "theses":[{{"ts":"MM:SS","thesis":"","reasoning":""}}],
  "disagreements":[{{"ts":"MM:SS","detail":""}}],

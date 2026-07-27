@@ -338,6 +338,7 @@ def views_cmd(instrument, speaker, direction, since, verified_only, unmapped,
                    v.asset_class, v.direction, v.conviction, v.level_type,
                    v.level_value, v.level_unit, v.level_verified, v.horizon,
                    v.horizon_ends_at, v.outcome, v.thesis, v.video_id, v.start_s,
+                   v.entry_basis, v.condition, v.stance,
                    c.title AS channel
             FROM views v JOIN channels c ON c.id = v.channel_id
             WHERE {' AND '.join(where)}
@@ -348,8 +349,8 @@ def views_cmd(instrument, speaker, direction, since, verified_only, unmapped,
         writer.writerow([
             "stated_at", "speaker", "instrument", "instrument_raw", "asset_class",
             "direction", "conviction", "level_type", "level_value", "level_unit",
-            "level_verified", "horizon", "horizon_ends_at", "outcome",
-            "video_id", "start_s", "url", "thesis",
+            "level_verified", "horizon", "entry_basis", "condition", "stance",
+            "horizon_ends_at", "outcome", "video_id", "start_s", "url", "thesis",
         ])
         for r in rows:
             writer.writerow([
@@ -358,6 +359,7 @@ def views_cmd(instrument, speaker, direction, since, verified_only, unmapped,
                 r["conviction"] or "", r["level_type"] or "",
                 r["level_value"] if r["level_value"] is not None else "",
                 r["level_unit"] or "", r["level_verified"], r["horizon"] or "",
+                r["entry_basis"] or "", r["condition"] or "", r["stance"] or "",
                 r["horizon_ends_at"] or "", r["outcome"] or "",
                 r["video_id"], int(r["start_s"]),
                 f"https://youtu.be/{r['video_id']}?t={int(r['start_s'])}",
@@ -373,9 +375,16 @@ def views_cmd(instrument, speaker, direction, since, verified_only, unmapped,
             mark = "" if r["level_verified"] else " (unverified)"
             level = f"  {r['level_type'] or 'level'} {r['level_value']:g}{mark}"
         sym = r["instrument"] or f"?{r['instrument_raw']}"
+        # A conditional call must never read as an immediate one.
+        trigger = ""
+        if r["entry_basis"] and r["entry_basis"] != "unspecified":
+            trigger = "  [" + {"on_rally": "只在反彈時", "on_dip": "只在回落時",
+                               "on_break": "只在破位時",
+                               "on_confirmation": "待確認"}.get(
+                                   r["entry_basis"], r["entry_basis"]) + "]"
         click.echo(
             f"{r['stated_at'][:10]}  {sym:<10} {r['direction']:<8}"
-            f"{level:<28} {(r['speaker'] or '—')[:14]:<16}"
+            f"{level:<26}{trigger:<14}{(r['speaker'] or '—')[:14]:<16}"
             f"https://youtu.be/{r['video_id']}?t={int(r['start_s'])}"
         )
         click.echo(f"           {r['thesis'][:110]}")
