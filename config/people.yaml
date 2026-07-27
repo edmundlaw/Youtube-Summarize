@@ -1,0 +1,43 @@
+# Canonical speaker names.
+#
+# The same person is introduced differently in every title and by every
+# co-host: 羅家聰, KC博士, 羅家聰 KC 博士. Without canonicalisation a track
+# record splits across three names and counts nothing correctly.
+#
+# Anything not listed here is stored unattributed rather than guessed. That is
+# deliberate: an unattributed view is still useful, a misattributed one is
+# worse than useless.
+
+people:
+  羅家聰:
+    display: 羅家聰 (KC)
+    aliases: [KC博士, KC 博士, KC, 羅家聰 KC博士, 羅家聰 KC 博士, 羅家聰博士]
+  沈振盈:
+    display: 沈振盈 (沈大師)
+    aliases: [沈大師, 大師]
+  文錦輝:
+    display: 文錦輝
+    aliases: [文錦輝, 錦輝]
+  冼潤棠:
+    display: 冼潤棠 (棠哥)
+    aliases: [棠哥]
+  蔡康年:
+    display: 蔡康年
+    aliases: [教主]
+  羅尚沛:
+    display: Eugene 羅尚沛
+    aliases: [Eugene, Eugene 羅尚沛]
+  顧芷筠:
+    display: Debby 顧芷筠
+    aliases: [Debby, Debby 顧芷筠]
+
+# Strings that look like a name in a title but are not a person: sponsors,
+# programme names, dates. Matched as substrings, case-insensitive.
+not_people:
+  - 證券
+  - 財經台
+  - 直播
+  - 特約
+  - 贊助
+  - Raga
+  - Quamnet

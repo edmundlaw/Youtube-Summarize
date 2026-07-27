@@ -23,6 +23,11 @@ from .db import now_iso, transaction
 from .numbers import find_numbers
 
 DIRECTIONS = {"long", "short", "neutral", "avoid", "exit"}
+
+#: Generic role words the model writes when it will not commit to a name. They
+#: are not attributions and must never end up in a track record as though they
+#: were a person.
+_GENERIC_SPEAKER = {"主持", "主持人", "嘉賓", "host", "guest", "主播"}
 HORIZONS = {"intraday", "days", "weeks", "months", "quarters", "year"}
 
 #: Rough horizon lengths, used to compute when a call can be judged.
@@ -49,6 +54,49 @@ class View:
     level_verified: bool
     horizon: str | None
     start_s: float
+
+
+# --- speaker canonicalisation ----------------------------------------------
+
+
+def _load_people(root: Path | None = None) -> tuple[dict[str, str], list[str]]:
+    import yaml
+
+    path = (root or REPO_ROOT) / "config" / "people.yaml"
+    if not path.exists():
+        return {}, []
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    lookup: dict[str, str] = {}
+    for canonical, spec in (data.get("people") or {}).items():
+        display = (spec or {}).get("display") or canonical
+        for alias in [canonical, display, *((spec or {}).get("aliases") or [])]:
+            lookup[str(alias).strip().lower()] = display
+    return lookup, [str(x).lower() for x in (data.get("not_people") or [])]
+
+
+def canonical_speaker(name: str | None, root: Path | None = None) -> str | None:
+    """Resolve a spoken/parsed name to one canonical form.
+
+    The same person appears as 羅家聰, KC博士 and 羅家聰 KC 博士 depending on who
+    is introducing them. Left alone, a track record splits across three names
+    and counts none of them correctly. Anything unrecognised returns None —
+    an unattributed view is useful, a misattributed one is worse than useless.
+    """
+    if not name:
+        return None
+    text = name.strip()
+    lookup, not_people = _load_people(root)
+    low = text.lower()
+    if any(bad in low for bad in not_people) or "|" in text or len(text) > 30:
+        return None
+    if low in lookup:
+        return lookup[low]
+    # Longest containing alias wins: "羅家聰 KC 博士" must not resolve via "KC".
+    best = None
+    for alias, display in lookup.items():
+        if alias and alias in low and (best is None or len(alias) > len(best[0])):
+            best = (alias, display)
+    return best[1] if best else None
 
 
 # --- instrument mapping ----------------------------------------------------
@@ -181,11 +229,21 @@ def parse_views(payload: dict, hosts: list[str] | None = None) -> list[View]:
             continue
 
         speaker = str(item.get("speaker") or "").strip() or None
+        speaker = canonical_speaker(speaker) or (
+            speaker if speaker in _GENERIC_SPEAKER else None)
+        if speaker in _GENERIC_SPEAKER:
+            # "主持" is a role, not a name. When the episode has exactly one
+            # person on the roster it can only mean them; with two or more,
+            # guessing would put words in someone's mouth, so drop it.
+            speaker = (canonical_speaker(next(iter(roster)))
+                       if len(roster) == 1 else None)
         # Attribution must come from the video's own host roster. A station
         # trailer for another programme names that show's host mid-episode, and
         # the model has been observed adopting the name.
-        if speaker and roster and not any(h in speaker or speaker in h for h in roster):
-            speaker = None
+        elif speaker and roster:
+            allowed = {canonical_speaker(h) for h in roster} - {None}
+            if allowed and speaker not in allowed:
+                speaker = None
 
         value = item.get("level_value")
         try:

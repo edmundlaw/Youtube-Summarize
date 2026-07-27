@@ -66,7 +66,7 @@ instruments:
     asset_class: index
     display_name: S&P 500
     currency: USD
-    aliases: [標普, 標普500, S&P]
+    aliases: [標普, 標普500, S&P, 美股, 美國股市]
   "^SOX":
     asset_class: index
     display_name: Philadelphia Semiconductor
@@ -129,7 +129,7 @@ instruments:
     asset_class: commodity
     display_name: WTI Crude
     currency: USD
-    aliases: [油價, 原油, WTI, 紐約油]
+    aliases: [油價, 原油, WTI, 紐約油, 油, 石油]
   "BZ=F":
     asset_class: commodity
     display_name: Brent Crude
@@ -147,8 +147,24 @@ instruments:
     currency: USD
     aliases: [比特幣, BTC, 比特]
 
+  "^KS11":
+    asset_class: index
+    display_name: KOSPI
+    currency: KRW
+    aliases: [韓股, 韓國股市, 韓國股票, 南韓股市, KOSPI]
+  "000660.KS":
+    asset_class: equity
+    display_name: SK Hynix
+    currency: KRW
+    aliases: [SK海力士, 海力士, SK Hynix]
+  "005930.KS":
+    asset_class: equity
+    display_name: Samsung Electronics
+    currency: KRW
+    aliases: [三星, 三星電子, Samsung]
+
   US10Y:
     asset_class: rate
     display_name: US 10-year Treasury yield
     currency: USD
-    aliases: [十年債息, 10年債息, 美債息, 十年期債息]
+    aliases: [十年債息, 10年債息, 美債息, 十年期債息, 美債, 美國債息, 債息]

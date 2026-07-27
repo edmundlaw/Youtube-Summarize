@@ -382,6 +382,40 @@ def views_cmd(instrument, speaker, direction, since, verified_only, unmapped,
     click.echo(f"\n{len(rows)} views. Add --csv to export.")
 
 
+@main.command("views-reindex")
+def views_reindex() -> None:
+    """Re-extract views from stored summaries, without calling the model.
+
+    Extraction rules (instrument aliases, speaker rosters, level verification)
+    keep improving. Re-running them over summaries already paid for is free;
+    regenerating the summaries is not.
+    """
+    import json as _json
+
+    from .summarize import hosts_from_title
+    from .views import parse_views, store_views, sync_instruments
+
+    cfg, conn = _open()
+    sync_instruments(conn)
+    total = 0
+    for video in conn.execute("SELECT * FROM videos WHERE status = ?", (D.DONE,)):
+        path = cfg.data_dir / "normalized" / f"{video['id']}.summary.json"
+        if not path.exists():
+            continue
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        summary = conn.execute(
+            "SELECT id FROM summaries WHERE video_id=? ORDER BY id DESC LIMIT 1",
+            (video["id"],),
+        ).fetchone()
+        views = parse_views(data.get("payload", {}),
+                            hosts_from_title(video["title"]))
+        if views:
+            total += store_views(conn, dict(video), views,
+                                 summary["id"] if summary else None,
+                                 data.get("prompt_version", "?"))
+    click.echo(f"reindexed {total} views")
+
+
 @main.command("telegram-setup")
 @click.option("--token", default=None, help="Bot token from @BotFather. Reads .env if omitted.")
 @click.option("--wait", default=120, help="Seconds to wait for your message.")

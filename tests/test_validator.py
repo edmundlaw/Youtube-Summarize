@@ -314,5 +314,23 @@ def test_views_reject_off_roster_speakers():
          "thesis": "睇淡", "ts": "20:00"},
     ]}
     views = parse_views(payload, ["羅家聰 KC 博士", "Eugene 羅尚沛"])
-    assert views[0].speaker is None          # not a host of this episode
-    assert views[1].speaker == "羅家聰 KC 博士"
+    assert views[0].speaker is None          # 沈大師 is not on this episode
+    # stored under the canonical name, not whichever spelling the title used
+    assert views[1].speaker == "羅家聰 (KC)"
+
+
+def test_speaker_canonicalisation():
+    """The same person is introduced differently in every title and by every
+    co-host. Left alone, KC's track record split across 羅家聰, KC博士 and
+    羅家聰 KC 博士 and counted none of them correctly."""
+    from ytdigest.views import canonical_speaker
+
+    assert canonical_speaker("羅家聰") == "羅家聰 (KC)"
+    assert canonical_speaker("KC博士") == "羅家聰 (KC)"
+    assert canonical_speaker("羅家聰 KC 博士") == "羅家聰 (KC)"
+    assert canonical_speaker("沈大師") == "沈振盈 (沈大師)"
+    # sponsors, programme names and role words are not people
+    assert canonical_speaker("哈富證券||26-07-22") is None
+    assert canonical_speaker("Raga Finance") is None
+    assert canonical_speaker("主持") is None
+    assert canonical_speaker(None) is None
