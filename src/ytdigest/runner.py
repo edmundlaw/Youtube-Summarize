@@ -241,6 +241,9 @@ def stage_publish(cfg: Config, conn, video: dict) -> Path:
     if cfg.get("publish", "telegram", False):
         send_telegram(cfg, render_telegram(view, data["payload"], checks, data["state"]))
 
+    from .summarize import hosts_from_title
+    from .views import parse_views, store_views, sync_instruments
+
     with D.transaction(conn):
         conn.execute(
             "INSERT INTO summaries (video_id, prompt_version, model_id, "
@@ -251,6 +254,20 @@ def stage_publish(cfg: Config, conn, video: dict) -> Path:
                 data["state"], str(path), D.now_iso(),
             ),
         )
+        summary_id = conn.execute(
+            "SELECT id FROM summaries WHERE video_id=? ORDER BY id DESC LIMIT 1",
+            (video["id"],),
+        ).fetchone()["id"]
+
+    # Market views are extracted here rather than at summarise time so that a
+    # prompt change can be replayed over existing summaries without re-paying
+    # for generation.
+    sync_instruments(conn)
+    views = parse_views(data["payload"], hosts_from_title(video.get("title", "")))
+    if views:
+        n = store_views(conn, dict(video), views, summary_id,
+                        data.get("prompt_version", "?"))
+        log.info("publish.views", video_id=video["id"], views=n)
     return path
 
 

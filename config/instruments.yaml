@@ -1,0 +1,154 @@
+# Spoken name -> normalised symbol.
+#
+# Cantonese finance uses nicknames heavily and each host has their own. The
+# normalised symbol is what lets a view join to price data; the alias list is
+# what lets a transcript reach it. Add freely — an unmapped view is still
+# stored, it just cannot be backtested until the mapping exists.
+#
+# Symbols follow the convention your market-data source uses:
+#   HK equity  0700.HK      US equity  NVDA
+#   index      ^HSI         FX         USDJPY
+#   commodity  CL=F         crypto     BTC-USD
+
+instruments:
+  "0700.HK":
+    asset_class: equity
+    display_name: Tencent
+    currency: HKD
+    aliases: [騰訊, 騰迅, 鵝廠, tencent, Tencent]
+  "0005.HK":
+    asset_class: equity
+    display_name: HSBC
+    currency: HKD
+    aliases: [滙豐, 匯豐, 大笨象, HSBC]
+  "2388.HK":
+    asset_class: equity
+    display_name: BOC Hong Kong
+    currency: HKD
+    aliases: [中銀香港, 中銀]
+  "9988.HK":
+    asset_class: equity
+    display_name: Alibaba
+    currency: HKD
+    aliases: [阿里, 阿里巴巴, BABA]
+  "3690.HK":
+    asset_class: equity
+    display_name: Meituan
+    currency: HKD
+    aliases: [美團]
+  "1810.HK":
+    asset_class: equity
+    display_name: Xiaomi
+    currency: HKD
+    aliases: [小米]
+
+  "^HSI":
+    asset_class: index
+    display_name: Hang Seng Index
+    currency: HKD
+    aliases: [恒指, 恆指, 恒生指數, 恆生指數, 港股, HSI]
+  "^HSCE":
+    asset_class: index
+    display_name: HSCEI
+    currency: HKD
+    aliases: [國指, 企業指數, HSCEI]
+  "^DJI":
+    asset_class: index
+    display_name: Dow Jones
+    currency: USD
+    aliases: [道指, 道瓊斯]
+  "^IXIC":
+    asset_class: index
+    display_name: Nasdaq
+    currency: USD
+    aliases: [納指, 那斯達克, 納斯達克]
+  "^GSPC":
+    asset_class: index
+    display_name: S&P 500
+    currency: USD
+    aliases: [標普, 標普500, S&P]
+  "^SOX":
+    asset_class: index
+    display_name: Philadelphia Semiconductor
+    currency: USD
+    aliases: [費半, 費城半導體]
+
+  GOOGL:
+    asset_class: equity
+    display_name: Alphabet
+    currency: USD
+    aliases: [Alphabet, Google, 谷歌]
+  NVDA:
+    asset_class: equity
+    display_name: NVIDIA
+    currency: USD
+    aliases: [英偉達, 輝達, NVIDIA]
+  TSLA:
+    asset_class: equity
+    display_name: Tesla
+    currency: USD
+    aliases: [Tesla, 特斯拉]
+  META:
+    asset_class: equity
+    display_name: Meta
+    currency: USD
+    aliases: [Meta, 面書, 臉書]
+  AAPL:
+    asset_class: equity
+    display_name: Apple
+    currency: USD
+    aliases: [蘋果, Apple]
+  MSFT:
+    asset_class: equity
+    display_name: Microsoft
+    currency: USD
+    aliases: [微軟, Microsoft]
+  INTC:
+    asset_class: equity
+    display_name: Intel
+    currency: USD
+    aliases: [Intel, 英特爾]
+
+  USDJPY:
+    asset_class: fx
+    display_name: USD/JPY
+    currency: JPY
+    aliases: [日圓, 日元, 美元兌日圓, 美元兌日元, USDJPY]
+  USDCNY:
+    asset_class: fx
+    display_name: USD/CNY
+    currency: CNY
+    aliases: [人民幣, 人幣, 美元兌人民幣]
+  DXY:
+    asset_class: fx
+    display_name: Dollar Index
+    currency: USD
+    aliases: [美匯, 美滙, 美匯指數, 美元指數]
+
+  "CL=F":
+    asset_class: commodity
+    display_name: WTI Crude
+    currency: USD
+    aliases: [油價, 原油, WTI, 紐約油]
+  "BZ=F":
+    asset_class: commodity
+    display_name: Brent Crude
+    currency: USD
+    aliases: [布油, 布蘭特]
+  XAUUSD:
+    asset_class: commodity
+    display_name: Gold
+    currency: USD
+    aliases: [金價, 黃金, 個金, gold]
+
+  BTC-USD:
+    asset_class: crypto
+    display_name: Bitcoin
+    currency: USD
+    aliases: [比特幣, BTC, 比特]
+
+  US10Y:
+    asset_class: rate
+    display_name: US 10-year Treasury yield
+    currency: USD
+    aliases: [十年債息, 10年債息, 美債息, 十年期債息]

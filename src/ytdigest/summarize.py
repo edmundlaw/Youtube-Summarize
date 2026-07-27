@@ -123,9 +123,14 @@ def hosts_from_title(title: str) -> list[str]:
     nothing downstream could catch it. Wrong attribution is fatal to a
     prediction track record: it credits calls to someone who never made them.
     """
-    match = re.search(r"主持人?\s*[:：]\s*(.+)$", title)
+    # 主持 (host) and 嘉賓 (guest) both identify who is speaking. Channels are
+    # inconsistent: RagaFinance uses 主持：, Kinnis uses 嘉賓：, and 1號月台 uses
+    # neither — it tags the guest with a #hashtag instead.
+    match = re.search(r"(?:主持人?|嘉賓)\s*[:：]\s*(.+)$", title)
     if not match:
-        return []
+        tags = re.findall(r"#([^\s#]+)", title)
+        known = [t for t in tags if not t.lower().startswith(("kctalk", "kc博士"))]
+        return known[:3]
     tail = re.split(r"[|｜\[]", match.group(1))[0]
     names: list[str] = []
     for part in re.split(r"[、,，/／&]|\s+同\s+", tail):
@@ -189,8 +194,20 @@ def _system_prompt(ledger: list[LedgerEntry], lang: str,
 
 JSON 字串值裏面唔好用半形雙引號 \" ，要引用字幕原文就用「」。
 
+另外要抽取「市場觀點」(views)：每一個具體嘅睇好/睇淡/中性判斷，一個標的一行。
+  instrument_raw : 主持點叫嗰個標的（原文，例如 恒指、騰訊、日圓、金）
+  direction      : long / short / neutral / avoid / exit
+  level_value    : 只可以填字幕入面真正出現過嘅數字，冇就留空
+  level_type     : target / support / resistance / entry / stop / valuation
+  horizon        : intraday / days / weeks / months / quarters / year
+  speaker        : 一定要係上面名單入面嘅主持
+純粹講宏觀背景、冇具體判斷嘅，唔好當 view。
+
 輸出 JSON：
-{{"actionable":[{{"ts":"MM:SS","ticker":"如有","claim":""}}],
+{{"views":[{{"ts":"MM:SS","speaker":"","instrument_raw":"","direction":"",
+  "conviction":"high|medium|low","thesis":"","reasoning":"",
+  "level_type":"","level_value":null,"level_unit":"hkd|usd|pct|points","horizon":""}}],
+ "actionable":[{{"ts":"MM:SS","ticker":"如有","claim":""}}],
  "theses":[{{"ts":"MM:SS","thesis":"","reasoning":""}}],
  "disagreements":[{{"ts":"MM:SS","detail":""}}],
  "risks":[{{"ts":"MM:SS","risk":""}}],
@@ -319,6 +336,8 @@ def _flatten(payload: dict) -> str:
         parts.append(str(item.get("risk", "")))
     for item in payload.get("numbers", []):
         parts += [str(item.get("figure", "")), str(item.get("context", ""))]
+    for item in payload.get("views", []):
+        parts += [str(item.get("thesis", "")), str(item.get("reasoning", ""))]
     # A bare newline lets a pattern span two unrelated fields: a figure
     # ending one field joined the 股 opening the next, yielding phantom
     # "165\n股" entries that can never verify. A non-space separator

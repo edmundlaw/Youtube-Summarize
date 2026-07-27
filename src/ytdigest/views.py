@@ -1,0 +1,288 @@
+"""Extraction and storage of market views.
+
+A "view" is one speaker's call on one instrument: direction, optionally a
+level, optionally a horizon. It is the unit you backtest — not a video, not a
+summary.
+
+The rule that governs everything here: a level is stored as `verified` only if
+it matches a number_ledger row for that video on value and unit. An unverified
+level is still stored, because the direction and thesis remain useful, but it
+is marked so a backtest can exclude it. Silently treating an unverified number
+as tradeable is the failure this project exists to prevent.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from .config import REPO_ROOT
+from .db import now_iso, transaction
+from .numbers import find_numbers
+
+DIRECTIONS = {"long", "short", "neutral", "avoid", "exit"}
+HORIZONS = {"intraday", "days", "weeks", "months", "quarters", "year"}
+
+#: Rough horizon lengths, used to compute when a call can be judged.
+HORIZON_DAYS = {
+    "intraday": 1, "days": 5, "weeks": 21,
+    "months": 63, "quarters": 126, "year": 252,
+}
+
+
+@dataclass
+class View:
+    speaker: str | None
+    instrument_raw: str
+    instrument: str | None
+    asset_class: str | None
+    direction: str
+    conviction: str | None
+    thesis: str
+    reasoning: str | None
+    level_type: str | None
+    level_value: float | None
+    level_unit: str | None
+    ledger_id: int | None
+    level_verified: bool
+    horizon: str | None
+    start_s: float
+
+
+# --- instrument mapping ----------------------------------------------------
+
+
+def load_instruments(root: Path | None = None) -> dict:
+    import yaml
+
+    path = (root or REPO_ROOT) / "config" / "instruments.yaml"
+    if not path.exists():
+        return {}
+    return (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("instruments", {})
+
+
+def sync_instruments(conn, root: Path | None = None) -> int:
+    """Load the YAML mapping into the DB. Idempotent."""
+    data = load_instruments(root)
+    with transaction(conn):
+        for symbol, spec in data.items():
+            conn.execute(
+                "INSERT INTO instruments (symbol, asset_class, display_name, currency, added_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET "
+                "  asset_class=excluded.asset_class, display_name=excluded.display_name, "
+                "  currency=excluded.currency",
+                (symbol, spec.get("asset_class", "unknown"), spec.get("display_name"),
+                 spec.get("currency"), now_iso()),
+            )
+            for alias in [symbol, *(spec.get("aliases") or [])]:
+                conn.execute(
+                    "INSERT INTO instrument_aliases (alias, symbol, added_at) VALUES (?,?,?) "
+                    "ON CONFLICT(alias) DO UPDATE SET symbol=excluded.symbol",
+                    (str(alias), symbol, now_iso()),
+                )
+    return len(data)
+
+
+def resolve_instrument(conn, spoken: str) -> tuple[str | None, str | None]:
+    """Map a spoken name to (symbol, asset_class). Longest alias wins.
+
+    Longest-first matters: 恒生指數 must not be resolved by a shorter alias that
+    happens to be a substring of it.
+    """
+    text = (spoken or "").strip()
+    if not text:
+        return None, None
+    row = conn.execute(
+        "SELECT i.symbol, i.asset_class FROM instrument_aliases a "
+        "JOIN instruments i ON i.symbol = a.symbol WHERE a.alias = ?", (text,)
+    ).fetchone()
+    if row:
+        return row["symbol"], row["asset_class"]
+    best = None
+    for alias in conn.execute(
+        "SELECT a.alias, i.symbol, i.asset_class FROM instrument_aliases a "
+        "JOIN instruments i ON i.symbol = a.symbol"
+    ):
+        if alias["alias"] in text and (best is None or len(alias["alias"]) > len(best["alias"])):
+            best = alias
+    return (best["symbol"], best["asset_class"]) if best else (None, None)
+
+
+# --- level verification ----------------------------------------------------
+
+
+#: A price level is almost never spoken with its unit — "跌到205" is how an
+#: analyst says "down to USD 205". The ledger correctly records that as a
+#: unit-less `count`, so demanding an exact unit match rejected nearly every
+#: real level (2 of 19 on the first run). A bare count may therefore back a
+#: money or index-points level; it may NOT back a percentage or a multiple,
+#: where the unit carries the meaning.
+_LEDGER_FOR = {
+    "usd": {"usd", "count"}, "hkd": {"hkd", "count"}, "cny": {"cny", "count"},
+    "points": {"count"}, "index": {"count"}, None: {"count"},
+    "pct": {"pct"}, "bps": {"bps"}, "multiple": {"multiple"},
+}
+
+
+def verify_level(conn, video_id: str, value: float | None, unit: str | None):
+    """Find the number_ledger row backing this level. Returns (id, verified).
+
+    Verification is on the VALUE plus a compatible unit — the same rule the
+    summary validator uses, kept deliberately parallel so the two cannot drift.
+    A level that does not verify is still stored; it is simply excluded from a
+    backtest by `level_verified = 0`.
+    """
+    if value is None:
+        return None, False
+    allowed = _LEDGER_FOR.get(unit, {unit, "count"} if unit else {"count"})
+    rows = list(conn.execute(
+        "SELECT id, unit, normalized FROM number_ledger WHERE video_id = ?", (video_id,)
+    ))
+    fallback = None
+    for row in rows:
+        try:
+            stored = float(row["normalized"])
+        except (TypeError, ValueError):
+            continue
+        if stored != value:
+            continue
+        if row["unit"] in allowed:
+            return row["id"], True
+        fallback = fallback or row["id"]
+    # Value spoken, but under a unit that cannot back this kind of level.
+    return fallback, False
+
+
+def _first_number(text: str) -> tuple[float | None, str | None]:
+    hits = [h for h in find_numbers(text or "") if h.value is not None]
+    return (hits[0].value, hits[0].unit) if hits else (None, None)
+
+
+# --- parsing the model's output --------------------------------------------
+
+
+def parse_views(payload: dict, hosts: list[str] | None = None) -> list[View]:
+    """Turn the summariser's `views` array into View objects.
+
+    Anything malformed is dropped rather than guessed at — a half-parsed view
+    is worse than a missing one, because it looks like data.
+    """
+    out: list[View] = []
+    roster = {h.strip() for h in (hosts or []) if h.strip()}
+    for item in payload.get("views") or []:
+        if not isinstance(item, dict):
+            continue
+        direction = str(item.get("direction", "")).strip().lower()
+        thesis = str(item.get("thesis", "")).strip()
+        raw = str(item.get("instrument_raw") or item.get("instrument") or "").strip()
+        if direction not in DIRECTIONS or not thesis or not raw:
+            continue
+
+        speaker = str(item.get("speaker") or "").strip() or None
+        # Attribution must come from the video's own host roster. A station
+        # trailer for another programme names that show's host mid-episode, and
+        # the model has been observed adopting the name.
+        if speaker and roster and not any(h in speaker or speaker in h for h in roster):
+            speaker = None
+
+        value = item.get("level_value")
+        try:
+            value = float(value) if value is not None and value != "" else None
+        except (TypeError, ValueError):
+            value = None
+        unit = (str(item.get("level_unit")).strip().lower()
+                if item.get("level_unit") else None)
+        if value is None and item.get("level"):
+            value, unit = _first_number(str(item["level"]))
+
+        horizon = str(item.get("horizon") or "").strip().lower() or None
+        if horizon not in HORIZONS:
+            horizon = None
+
+        out.append(View(
+            speaker=speaker,
+            instrument_raw=raw,
+            instrument=None,
+            asset_class=None,
+            direction=direction,
+            conviction=(str(item.get("conviction")).strip().lower()
+                        if item.get("conviction") else None),
+            thesis=thesis,
+            reasoning=str(item.get("reasoning") or "").strip() or None,
+            level_type=(str(item.get("level_type")).strip().lower()
+                        if item.get("level_type") else None),
+            level_value=value,
+            level_unit=unit,
+            ledger_id=None,
+            level_verified=False,
+            horizon=horizon,
+            start_s=_offset(item.get("ts")),
+        ))
+    return out
+
+
+def _offset(ts) -> float:
+    if ts is None:
+        return 0.0
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    parts = re.findall(r"\d+", str(ts))
+    if not parts:
+        return 0.0
+    nums = [int(p) for p in parts]
+    if len(nums) >= 3:
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    if len(nums) == 2:
+        return nums[0] * 60 + nums[1]
+    return float(nums[0])
+
+
+# --- storage ---------------------------------------------------------------
+
+
+def store_views(conn, video: dict, views: list[View], summary_id: int | None,
+                prompt_version: str) -> int:
+    """Resolve, verify and persist. Returns the number of rows written."""
+    published = video.get("published_at") or now_iso()
+    try:
+        base = datetime.fromisoformat(published)
+    except ValueError:
+        base = datetime.now(UTC)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=UTC)
+
+    written = 0
+    with transaction(conn):
+        for view in views:
+            symbol, asset_class = resolve_instrument(conn, view.instrument_raw)
+            ledger_id, verified = verify_level(
+                conn, video["id"], view.level_value, view.level_unit
+            )
+            stated_at = (base + timedelta(seconds=view.start_s)).astimezone(UTC)
+            ends_at = None
+            if view.horizon:
+                ends_at = (stated_at + timedelta(
+                    days=HORIZON_DAYS.get(view.horizon, 21) * 1.4
+                )).isoformat(timespec="seconds")
+
+            conn.execute(
+                "INSERT INTO views (video_id, channel_id, speaker, stated_at, start_s, "
+                " instrument, instrument_raw, asset_class, direction, conviction, thesis, "
+                " reasoning, level_type, level_value, level_unit, ledger_id, level_verified, "
+                " horizon, horizon_ends_at, outcome, summary_id, prompt_version, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?) "
+                "ON CONFLICT DO UPDATE SET "
+                "  thesis=excluded.thesis, reasoning=excluded.reasoning, "
+                "  instrument=excluded.instrument, level_verified=excluded.level_verified, "
+                "  ledger_id=excluded.ledger_id, summary_id=excluded.summary_id",
+                (video["id"], video["channel_id"], view.speaker,
+                 stated_at.isoformat(timespec="seconds"), view.start_s,
+                 symbol, view.instrument_raw, asset_class, view.direction,
+                 view.conviction, view.thesis, view.reasoning, view.level_type,
+                 view.level_value, view.level_unit, ledger_id, int(verified),
+                 view.horizon, ends_at, summary_id, prompt_version, now_iso()),
+            )
+            written += 1
+    return written

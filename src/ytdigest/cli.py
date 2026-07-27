@@ -304,6 +304,84 @@ def add(url_or_id: str) -> None:
     click.echo(f"queued {video_id}  {info.get('title', '')[:70]}")
 
 
+@main.command("views")
+@click.option("--instrument", default=None, help="Filter by symbol, e.g. ^HSI or 0700.HK")
+@click.option("--speaker", default=None, help="Filter by speaker (substring).")
+@click.option("--direction", default=None, help="long | short | neutral | avoid | exit")
+@click.option("--since", default=None, help="ISO date, e.g. 2026-07-01")
+@click.option("--verified-only", is_flag=True, help="Only levels matched to the ledger.")
+@click.option("--unmapped", is_flag=True, help="Show views whose instrument did not map.")
+@click.option("--csv", "as_csv", is_flag=True, help="CSV to stdout, for charting/backtest.")
+@click.option("--limit", type=int, default=60)
+def views_cmd(instrument, speaker, direction, since, verified_only, unmapped,
+              as_csv, limit):
+    """Query the market views extracted from videos."""
+    import csv as _csv
+
+    _, conn = _open()
+    where, args = ["1=1"], []
+    if instrument:
+        where.append("v.instrument = ?"); args.append(instrument)
+    if speaker:
+        where.append("v.speaker LIKE ?"); args.append(f"%{speaker}%")
+    if direction:
+        where.append("v.direction = ?"); args.append(direction)
+    if since:
+        where.append("v.stated_at >= ?"); args.append(since)
+    if verified_only:
+        where.append("v.level_verified = 1")
+    if unmapped:
+        where.append("v.instrument IS NULL")
+
+    rows = list(conn.execute(
+        f"""SELECT v.stated_at, v.speaker, v.instrument, v.instrument_raw,
+                   v.asset_class, v.direction, v.conviction, v.level_type,
+                   v.level_value, v.level_unit, v.level_verified, v.horizon,
+                   v.horizon_ends_at, v.outcome, v.thesis, v.video_id, v.start_s,
+                   c.title AS channel
+            FROM views v JOIN channels c ON c.id = v.channel_id
+            WHERE {' AND '.join(where)}
+            ORDER BY v.stated_at DESC LIMIT ?""", (*args, limit)))
+
+    if as_csv:
+        writer = _csv.writer(sys.stdout)
+        writer.writerow([
+            "stated_at", "speaker", "instrument", "instrument_raw", "asset_class",
+            "direction", "conviction", "level_type", "level_value", "level_unit",
+            "level_verified", "horizon", "horizon_ends_at", "outcome",
+            "video_id", "start_s", "url", "thesis",
+        ])
+        for r in rows:
+            writer.writerow([
+                r["stated_at"], r["speaker"] or "", r["instrument"] or "",
+                r["instrument_raw"], r["asset_class"] or "", r["direction"],
+                r["conviction"] or "", r["level_type"] or "",
+                r["level_value"] if r["level_value"] is not None else "",
+                r["level_unit"] or "", r["level_verified"], r["horizon"] or "",
+                r["horizon_ends_at"] or "", r["outcome"] or "",
+                r["video_id"], int(r["start_s"]),
+                f"https://youtu.be/{r['video_id']}?t={int(r['start_s'])}",
+                r["thesis"],
+            ])
+        return
+
+    if not rows:
+        click.echo("no views match."); return
+    for r in rows:
+        level = ""
+        if r["level_value"] is not None:
+            mark = "" if r["level_verified"] else " (unverified)"
+            level = f"  {r['level_type'] or 'level'} {r['level_value']:g}{mark}"
+        sym = r["instrument"] or f"?{r['instrument_raw']}"
+        click.echo(
+            f"{r['stated_at'][:10]}  {sym:<10} {r['direction']:<8}"
+            f"{level:<28} {(r['speaker'] or '—')[:14]:<16}"
+            f"https://youtu.be/{r['video_id']}?t={int(r['start_s'])}"
+        )
+        click.echo(f"           {r['thesis'][:110]}")
+    click.echo(f"\n{len(rows)} views. Add --csv to export.")
+
+
 @main.command("telegram-setup")
 @click.option("--token", default=None, help="Bot token from @BotFather. Reads .env if omitted.")
 @click.option("--wait", default=120, help="Seconds to wait for your message.")

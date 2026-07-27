@@ -275,3 +275,44 @@ def test_ledger_sampling_covers_the_whole_video():
     assert max(e.start_s for e in sampled) > ledger[-1].start_s * 0.95
     # and when it fits, nothing is dropped
     assert len(_sample_ledger(ledger[:50], 400)) == 50
+
+
+def test_views_verify_level_against_ledger():
+    """A price level is rarely spoken with its unit — '跌到205' is how USD 205
+    is said — so the ledger records a bare count. Demanding an exact unit match
+    rejected 17 of 19 real levels. A count may back money/points, but must not
+    back a percentage, where the unit carries the meaning."""
+    import pathlib
+    import tempfile
+
+    from ytdigest import db as D
+    from ytdigest.views import verify_level
+
+    conn = D.open_db(pathlib.Path(tempfile.mkdtemp()) / "t.db", pathlib.Path("migrations"))
+    conn.execute("INSERT INTO channels (id,title,added_at) VALUES ('UC1','c',?)", (D.now_iso(),))
+    conn.execute("INSERT INTO videos (id,channel_id,title,published_at,discovered_at,status)"
+                 " VALUES ('v1','UC1','t','2026-01-01','2026-01-01','done')")
+    for raw, norm, unit in [("205", "205", "count"), ("13%", "13", "pct")]:
+        conn.execute(
+            "INSERT INTO number_ledger (video_id,raw_text,normalized,unit,segment_id,"
+            "start_s,context) VALUES ('v1',?,?,?,0,0,'x')", (raw, norm, unit))
+
+    assert verify_level(conn, "v1", 205.0, "usd")[1] is True     # bare count backs USD
+    assert verify_level(conn, "v1", 205.0, "points")[1] is True  # and index points
+    assert verify_level(conn, "v1", 13.0, "pct")[1] is True      # pct backs pct
+    assert verify_level(conn, "v1", 205.0, "pct")[1] is False    # count must NOT back pct
+    assert verify_level(conn, "v1", 999.0, "usd")[1] is False    # value absent entirely
+
+
+def test_views_reject_off_roster_speakers():
+    from ytdigest.views import parse_views
+
+    payload = {"views": [
+        {"speaker": "沈大師", "instrument_raw": "恒指", "direction": "long",
+         "thesis": "睇好", "ts": "10:00"},
+        {"speaker": "羅家聰 KC 博士", "instrument_raw": "恒指", "direction": "short",
+         "thesis": "睇淡", "ts": "20:00"},
+    ]}
+    views = parse_views(payload, ["羅家聰 KC 博士", "Eugene 羅尚沛"])
+    assert views[0].speaker is None          # not a host of this episode
+    assert views[1].speaker == "羅家聰 KC 博士"
