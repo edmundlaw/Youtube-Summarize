@@ -211,6 +211,24 @@ def run(limit: int | None, no_discover: bool) -> None:
             found = discover_all(cfg, conn)
             click.echo(f"discovered {found} new video(s)")
         stats = run_once(cfg, conn, limit)
+        # Prices and grading run every time so the record self-heals: Yahoo
+        # intermittently refuses connections from this machine, and a view that
+        # could not be graded today must be picked up automatically once it can.
+        try:
+            from .prices import default_start, fetch_prices, symbols_needed
+            from .resolver import resolve_all
+
+            wanted = symbols_needed(conn)
+            if wanted:
+                got = fetch_prices(conn, wanted, default_start(),
+                                   datetime.now(UTC).date().isoformat())
+                missing = [s for s, n in got.items() if n == 0]
+                log.info("run.prices", fetched=sum(got.values()),
+                         no_data=len(missing))
+            log.info("run.resolved", **resolve_all(conn))
+        except Exception as exc:
+            # Never fail a publishing run because grading could not happen.
+            log.warning("run.grading_skipped", error=str(exc)[:200])
         click.echo(
             f"processed {stats['processed']}, completed {stats['completed']}, "
             f"failed {stats['failed']}"
@@ -423,6 +441,65 @@ def views_reindex() -> None:
                                  summary["id"] if summary else None,
                                  data.get("prompt_version", "?"))
     click.echo(f"reindexed {total} views")
+
+
+@main.command("prices")
+@click.option("--start", default=None, help="ISO date. Default: last calendar year.")
+@click.option("--symbol", multiple=True, help="Limit to these symbols.")
+def prices_cmd(start, symbol):
+    """Fetch daily price bars for the instruments views refer to."""
+    from datetime import date
+
+    from .prices import coverage, default_start, fetch_prices, symbols_needed
+
+    _, conn = _open()
+    wanted = list(symbol) or symbols_needed(conn)
+    if not wanted:
+        click.echo("no mapped instruments yet — run the pipeline first."); return
+    click.echo(f"fetching {len(wanted)} symbols from {start or default_start()}...")
+    stored = fetch_prices(conn, wanted, start or default_start(),
+                          date.today().isoformat())
+    empty = [s for s, n in stored.items() if n == 0]
+    for row in coverage(conn):
+        click.echo(f"  {row['symbol']:<12} {row['bars']:>5} bars  "
+                   f"{row['first']} .. {row['last']}")
+    if empty:
+        # Never silent: a symbol with no data becomes an ungraded view later,
+        # and without this line there would be nothing explaining why.
+        click.echo(f"\nNO DATA for: {', '.join(empty)}")
+        click.echo("Those instruments cannot be graded until a source is found.")
+
+
+@main.command("scorecard")
+@click.option("--resolve/--no-resolve", default=True, help="Grade pending views first.")
+@click.option("--min-graded", type=int, default=5,
+              help="Below this many graded calls, show no hit rate.")
+def scorecard_cmd(resolve: bool, min_graded: int) -> None:
+    """Speaker track records, with everything that could not be graded shown."""
+    from .resolver import resolve_all, scorecard
+
+    _, conn = _open()
+    if resolve:
+        counts = resolve_all(conn)
+        click.echo("graded: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+        click.echo("")
+
+    rows = scorecard(conn, min_graded)
+    click.echo(f"{'speaker':<20}{'hit':>5}{'miss':>6}{'rate':>8}"
+               f"{'void':>7}{'unresolv':>10}{'pending':>9}{'total':>7}")
+    click.echo("-" * 72)
+    for r in rows:
+        rate = f"{r['hit_rate']*100:.0f}%" if r["hit_rate"] is not None else "—"
+        click.echo(
+            f"{r['speaker'][:19]:<20}{r['hit']:>5}{r['missed']:>6}{rate:>8}"
+            f"{r['void']:>7}{r['unresolvable']:>10}{r['pending']:>9}{r['total']:>7}"
+        )
+    click.echo("")
+    click.echo("rate is over graded calls only (hit+miss). '—' means too few to judge.")
+    click.echo("void = conditional call whose trigger never fired — the speaker")
+    click.echo("       never advised acting, so it counts neither way.")
+    click.echo("unresolvable = no horizon, no level, unverified level, or unmapped")
+    click.echo("       instrument. Not a failure of the speaker.")
 
 
 @main.command("telegram-setup")

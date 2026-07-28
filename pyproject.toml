@@ -11,6 +11,10 @@ dependencies = [
     "pyyaml>=6.0",
     "opencc-python-reimplemented>=0.1.7",
 ]
+# Note: no market-data library. Prices come from one Yahoo chart
+# endpoint called directly (src/ytdigest/prices.py) — yfinance was
+# tried and removed, since it wrapped the same URL and added a
+# dependency for nothing.
 
 [project.optional-dependencies]
 # Kept separate so `ytdigest status` / `doctor` work on a machine without MLX.
