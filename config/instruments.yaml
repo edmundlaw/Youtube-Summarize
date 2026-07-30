@@ -35,7 +35,12 @@ instruments:
     asset_class: equity
     display_name: Meituan
     currency: HKD
-    aliases: [美團]
+    aliases: [美團, "3690"]
+  "2888.HK":
+    asset_class: equity
+    display_name: Standard Chartered
+    currency: HKD
+    aliases: [渣打, 渣打銀行]
   "1810.HK":
     asset_class: equity
     display_name: Xiaomi
@@ -72,6 +77,11 @@ instruments:
     display_name: Philadelphia Semiconductor
     currency: USD
     aliases: [費半, 費城半導體]
+  "^N225":
+    asset_class: index
+    display_name: Nikkei 225
+    currency: JPY
+    aliases: [日經, 日经, 日經指數, 日本股市, Nikkei]
 
   GOOGL:
     asset_class: equity
@@ -82,7 +92,7 @@ instruments:
     asset_class: equity
     display_name: NVIDIA
     currency: USD
-    aliases: [英偉達, 輝達, NVIDIA]
+    aliases: [英偉達, 輝達, NVIDIA, Nvidia, nvidia]
   TSLA:
     asset_class: equity
     display_name: Tesla
@@ -139,7 +149,11 @@ instruments:
     asset_class: commodity
     display_name: Gold
     currency: USD
-    aliases: [金價, 黃金, 個金, gold]
+    # 黄 is the simplified form of 黃; both appear because the caption track
+    # switches script mid-video. Bare 金 is deliberately NOT an alias — it is a
+    # substring of 基金 (fund), 資金 (capital) and 美金 (USD), and substring
+    # matching would silently attach those views to gold.
+    aliases: [金價, 黃金, 黄金, 個金, gold, Gold]
 
   BTC-USD:
     asset_class: crypto

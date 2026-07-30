@@ -95,6 +95,30 @@ def test_open_horizon_is_pending(conn):
     assert resolve_view(conn, v).outcome == PENDING
 
 
+def test_hk_shorthand_fx_quote_is_refused_not_inverted(conn):
+    """文錦輝 says '歐羅114樓下，睇淡' — HK shorthand for EUR/USD 1.14, with the
+    decimal dropped. Graded naively against a series trading at 1.15 this
+    returns a confident `missed` for a call that was right. Refusing is the
+    only safe answer: we cannot tell a shorthand from a real target."""
+    conn.execute("INSERT INTO instruments (symbol,asset_class,added_at) "
+                 "VALUES ('EURUSD=X','fx',?)", (D.now_iso(),))
+    add_bars(conn, "EURUSD=X", [("2026-01-05", 1.14, 1.16),
+                                ("2026-01-12", 1.12, 1.15)])
+    v = add_view(conn, instrument="EURUSD=X", instrument_raw="歐羅",
+                 direction="short", level_value=114.0)
+    verdict = resolve_view(conn, v)
+    assert verdict.outcome == UNRESOLVABLE
+    assert "scale" in verdict.note
+
+
+def test_a_bold_but_same_scale_forecast_still_grades(conn):
+    """The scale gate must not swallow genuine high-conviction calls."""
+    add_bars(conn, "^HSI", [("2026-01-05", 25000, 25500),
+                            ("2026-01-12", 25200, 25600)])
+    v = add_view(conn, direction="long", level_value=60000.0)   # 2.4x, bold
+    assert resolve_view(conn, v).outcome == MISSED
+
+
 # --- actual grading --------------------------------------------------------
 
 def test_long_target_reached_is_hit(conn):
@@ -140,6 +164,21 @@ def test_conditional_short_graded_only_after_the_rally(conn):
     v = add_view(conn, direction="short", entry_basis="on_rally",
                  level_value=22000.0)
     assert resolve_view(conn, v).outcome == HIT
+
+
+# --- the dedupe index -------------------------------------------------------
+
+def test_unattributed_views_deduplicate(conn):
+    """SQLite treats NULLs in a UNIQUE index as distinct, so a bare `speaker`
+    column let every unattributed view re-insert on each reindex. That inflated
+    the scorecard denominator, which makes any hit rate computed from it wrong
+    while looking perfectly normal."""
+    import sqlite3
+    add_view(conn, speaker=None, level_value=26000.0)
+    with pytest.raises(sqlite3.IntegrityError):
+        add_view(conn, speaker=None, level_value=26000.0)   # same call, again
+    n = conn.execute("SELECT COUNT(*) FROM views WHERE speaker IS NULL").fetchone()[0]
+    assert n == 1
 
 
 # --- scorecard honesty -----------------------------------------------------

@@ -104,6 +104,36 @@ def _trigger_index(bars: list, basis: str, reference: float,
     return None
 
 
+#: How far a stated level may sit from the traded range before we refuse to
+#: judge it. Wide on purpose: a genuine call for a 3x move must still grade.
+#: This exists to catch a *quote convention* mismatch, not a bold forecast.
+_SCALE_TOLERANCE = 10.0
+
+
+def _scale_mismatch(level: float, bars: list) -> str | None:
+    """Detect a level that is not denominated the way the price series is.
+
+    Cantonese finance quotes FX with the decimal dropped: 歐羅114 means EUR/USD
+    1.14, 英鎊133 means 1.33. Compared naively against a series trading at 1.15,
+    every such call grades as a confident `missed` — a correct call recorded as
+    a wrong one, which is worse than not grading it at all. The same trap exists
+    for commodities quoted in dollars against a series quoted in cents.
+
+    We cannot infer the intended convention safely (114 could be a shorthand or
+    a real target), so a level two orders of magnitude away from anything the
+    instrument has traded at is refused, not rescaled.
+    """
+    closes = [b["close"] for b in bars if b["close"] not in (None, 0)]
+    if not closes or level <= 0:
+        return None
+    lo, hi = min(closes), max(closes)
+    if level > hi * _SCALE_TOLERANCE or level < lo / _SCALE_TOLERANCE:
+        return (f"stated level {level:g} is not on the same scale as the price "
+                f"series ({lo:g}–{hi:g}); quote convention ambiguous, refusing "
+                "to grade rather than risk inverting the verdict")
+    return None
+
+
 def resolve_view(conn, view) -> Verdict:
     """Grade one view. Returns a Verdict; never raises on bad data."""
     if not view["instrument"]:
@@ -133,6 +163,10 @@ def resolve_view(conn, view) -> Verdict:
                        f"no price data for {view['instrument']} in {start}..{end}")
 
     level = float(view["level_value"])
+    mismatch = _scale_mismatch(level, bars)
+    if mismatch:
+        return Verdict(UNRESOLVABLE, None, mismatch)
+
     basis = view["entry_basis"] or "unspecified"
     reference = bars[0]["close"]
 
