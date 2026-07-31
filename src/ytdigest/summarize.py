@@ -25,7 +25,10 @@ from .validator import (
     PASSED_WITH_FLAGS, check_text, offending, retry_instruction, verdict,
 )
 
-PROMPT_VERSION = "v2"
+#: v3 added the attribution, reported-speech and hedge rules. Bumping this
+#: matters for the track record: views carrying an older version were attributed
+#: by guesswork and must not be pooled with v3 ones when judging a speaker.
+PROMPT_VERSION = "v3"
 
 
 def _mmss(seconds: float) -> str:
@@ -182,7 +185,26 @@ def _system_prompt(ledger: list[LedgerEntry], lang: str,
 {host_rule}
 唔准將主張歸咎於名單以外嘅人。節目中間會播其他節目嘅宣傳片，
 入面會提到第二個節目嘅主持名。嗰啲名唔屬於呢一集，唔可以當佢哋喺度講嘢。
-如果唔肯定邊個講，就寫「主持」，唔好估。
+
+字幕係冇標明邊個講嘢嘅。所以【預設一律寫「主持」】。
+只有以下情況先可以寫人名：
+  ‧ 有人叫佢個名（例：「KC你點睇？」→ 之後嗰段係 KC 講）
+  ‧ 佢自報身份（例：「我上個禮拜喺韓國……」而片名講明只有佢去過）
+冇上面嘅憑據就寫「主持」。寫錯邊個講，比冇寫名嚴重得多。
+
+【引述唔等於主張】
+主持之間會互相引用、質問對方之前講過嘅嘢。例如
+「你唔係話120蚊咩，我記得」——講呢句嗰個人係喺度*問返*對方，
+唔係佢自己睇120蚊。呢種情況：唔可以當作講嘢嗰個人嘅觀點，
+亦唔可以當作被問嗰個人而家嘅觀點（佢可能已經改咗主意）。
+除非佢自己親口再確認，否則唔好當係任何人嘅 view。
+
+【保留佢嘅保留】
+「未必」「唔一定」「可能」「睇怕」係佢刻意留低嘅餘地，要照寫。
+講「係咪成個下半年差就未必」＝佢*唔認為*成個下半年一定差，
+唔可以寫成「下半年可能回落」。
+講「彈返啲但係唔夠力」＝彈but弱，唔可以只寫「有反彈」。
+將佢嘅對沖講法拉直做預測，係最常見亦最誤導嘅錯。
 
 【數字鐵律】
 你只可以使用以下喺字幕入面真正出現過嘅數字：
@@ -206,8 +228,10 @@ JSON 字串值裏面唔好用半形雙引號 \" ，要引用字幕原文就用�
   stance         : bullish / bearish / neutral（佢對呢個標的嘅基本睇法）
 【重要】主持話「等反彈先沽」同「而家沽」係兩件事。
 唔好將有條件嘅判斷寫成即時判斷 —— 要照佢講嘅條件記低。
-  speaker        : 一定要係上面名單入面嘅主持
+  speaker        : 名單入面嘅主持，或者「主持」（唔肯定邊個講就用呢個）。
+                   照【講者鐵律】——冇憑據就寫「主持」，唔准估。
 純粹講宏觀背景、冇具體判斷嘅，唔好當 view。
+主持引述／質問對方之前講過嘅數字，唔算 view（見【引述唔等於主張】）。
 
 輸出 JSON：
 {{"views":[{{"ts":"MM:SS","speaker":"","instrument_raw":"","direction":"",
@@ -216,7 +240,7 @@ JSON 字串值裏面唔好用半形雙引號 \" ，要引用字幕原文就用�
   "entry_basis":"","condition":"","stance":""}}],
  "actionable":[{{"ts":"MM:SS","ticker":"如有","claim":""}}],
  "theses":[{{"ts":"MM:SS","thesis":"","reasoning":""}}],
- "disagreements":[{{"ts":"MM:SS","detail":""}}],
+ "disagreements":[{{"ts":"MM:SS","detail":"寫邊個持邊個立場前，一樣要跟【講者鐵律】"}}],
  "risks":[{{"ts":"MM:SS","risk":""}}],
  "numbers":[{{"figure":"","context":"","ts":"MM:SS"}}]}}"""
 
