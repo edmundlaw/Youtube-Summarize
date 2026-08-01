@@ -425,19 +425,27 @@ def test_empty_completion_is_retried_in_place():
     assert calls["n"] == 2
 
 
-def test_empty_completion_message_distinguishes_its_two_causes(monkeypatch):
-    """Always advising 'raise max_tokens' is wrong half the time and sends the
-    next reader down the wrong path."""
+def test_finish_reason_decides_the_remedy_not_whether_content_survived(monkeypatch):
+    """A budget spent on reasoning yields either a fragment or nothing at all --
+    the same failure, differing only in whether a character escaped before the
+    cut. Classifying the empty case as "no content" sent it to the in-place
+    retry, which re-sent the identical request three times at the identical
+    budget and could never succeed."""
     import contextlib
 
     import httpx
 
-    from ytdigest.summarize import _EmptyCompletion
+    from ytdigest.summarize import _EmptyCompletion, _Truncated
 
-    for reason, expect in (("length", "raise summarize.max_tokens"),
-                           ("stop", "transient")):
+    cases = [
+        ("length", "", _Truncated),          # reasoning ate everything
+        ("length", '{"a":', _Truncated),     # reasoning ate all but a fragment
+        ("stop", "", _EmptyCompletion),      # answered with nothing; transient
+    ]
+    for reason, content, expected in cases:
         response = _sse(
-            {"choices": [{"delta": {}, "finish_reason": reason}]},
+            {"choices": [{"delta": {"content": content} if content else {},
+                          "finish_reason": reason}]},
             {"choices": [], "usage": {"completion_tokens": 999,
                                       "completion_tokens_details":
                                           {"reasoning_tokens": 998}}},
@@ -446,10 +454,9 @@ def test_empty_completion_message_distinguishes_its_two_causes(monkeypatch):
                             lambda *a, **k: contextlib.nullcontext(response))
         try:
             _engine()._once("s", "u", 100, 5)
-            raise AssertionError("expected an empty completion")
-        except _EmptyCompletion as exc:
-            assert expect in str(exc), (reason, str(exc))
-            assert "reasoning_tokens=998" in str(exc)
+            raise AssertionError(f"expected {expected.__name__} for {reason!r}")
+        except expected as exc:
+            assert "reasoning_tokens=998" in str(exc), str(exc)
 
 
 # --- streamed transport -----------------------------------------------------

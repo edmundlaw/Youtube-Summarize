@@ -149,12 +149,16 @@ class DeepSeek:
         usage_all = payload.get("usage") or {}
         detail_all = usage_all.get("completion_tokens_details") or {}
 
-        # Truncation must be named, not left to surface as malformed JSON three
-        # frames away. Reasoning tokens count against max_tokens here, so a
-        # budget that mostly went on thinking returns a fragment -- observed as
-        # 107 characters of a JSON object, reported by the parser as
-        # "unterminated string", which points nowhere near the real cause.
-        if content and choice.get("finish_reason") == "length":
+        reason = choice.get("finish_reason")
+
+        # finish_reason is what decides the remedy, not whether any content
+        # survived. Reasoning tokens count against max_tokens on deepseek-v4, so
+        # a budget spent thinking yields either a fragment or nothing at all --
+        # the same failure, differing only in whether the model got a character
+        # out before the cut. Classifying the empty case as "no content" sent it
+        # to complete()'s in-place retry, which re-sent the identical request
+        # three times at the identical budget and could never succeed.
+        if reason == "length":
             raise _Truncated(
                 f"completion truncated at max_tokens={max_tokens} "
                 f"(reasoning_tokens={detail_all.get('reasoning_tokens')}, "
@@ -164,24 +168,13 @@ class DeepSeek:
                 RETRYABLE,
             )
         if not content:
-            # Report what actually happened rather than always blaming the
-            # budget. deepseek-v4 returns reasoning in a separate field and
-            # counts it against max_tokens, so an empty answer has two quite
-            # different causes and only one of them is fixed by raising it:
-            #   finish_reason=length -> reasoning consumed the budget
-            #   finish_reason=stop   -> the model simply returned nothing,
-            #                           which is transient and worth retrying
-            usage = payload.get("usage") or {}
-            details = usage.get("completion_tokens_details") or {}
-            reason = choice.get("finish_reason")
-            advice = ("raise summarize.max_tokens — reasoning tokens count "
-                      "against it" if reason == "length"
-                      else "model returned no content; transient")
+            # Answered, but with nothing in it, and not for want of budget.
+            # Non-deterministic: the same request succeeds on the next attempt.
             raise _EmptyCompletion(
                 f"empty completion (finish_reason={reason}, "
-                f"completion_tokens={usage.get('completion_tokens')}, "
-                f"reasoning_tokens={details.get('reasoning_tokens')}, "
-                f"max_tokens={max_tokens}); {advice}",
+                f"completion_tokens={usage_all.get('completion_tokens')}, "
+                f"reasoning_tokens={detail_all.get('reasoning_tokens')}, "
+                f"max_tokens={max_tokens}); model returned no content; transient",
                 RETRYABLE,
             )
         return content
