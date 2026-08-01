@@ -43,6 +43,35 @@ generation. The ledger is the authority; the LLM is not.
   / `payout ratio` / `holdco discount`; pro translated all four into Chinese.
   Flash is the default; pro is the escalation model for validator retries only,
   and its prompt needs the do-not-translate list restated.
+- **There are no dated model IDs.** DeepSeek ships new builds behind the same
+  two names — probing `deepseek-v4-0731`, `-flash-0731`, `-pro-0731` and
+  friends all return *"The supported API model names are deepseek-v4-pro or
+  deepseek-v4-flash"*. A release announcement therefore means the pipeline is
+  already on the new build, with no way to pin the old one. Re-test after one.
+- **Re-tested 2026-08-02 on the 0731 build. Flash stays, for a stronger
+  reason than the glossary.** Same video, same voice labels, both models:
+
+  | | flash | pro |
+  |---|---|---|
+  | speaker attributions matching voice ID | 8/9 | 4/8 |
+  | mismatches that **invent** a name | **0** | **4** |
+  | theses / actionable | 3 / 1 | 4 / 3 |
+  | wall clock | 461 s | 369 s |
+
+  Pro is faster and produces more claims. It also named 顧芷筠 (Debby) and
+  Eugene 羅尚沛 at four timestamps the transcript had labelled 主持 — neither
+  has a voiceprint, so nothing could ever confirm them. Flash's single
+  mismatch was the opposite: it wrote 主持 where voice knew it was KC.
+
+  That asymmetry is the whole decision. Flash under-claims and costs a data
+  point; pro fabricates and corrupts a person's record. `store_views` overrides
+  with voice where identification has run, but the digest prose still carries
+  the invented name, and on a video with no identification nothing overrides it
+  at all.
+
+  The glossary axis was **not** re-tested: the sample video contains exactly
+  one protected term (`yoy`) and neither model kept it, which is too thin to
+  conclude anything. Re-run on a vocabulary-rich episode before revisiting.
 
 ## Findings that constrain the design
 
