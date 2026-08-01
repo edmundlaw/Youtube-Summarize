@@ -39,6 +39,14 @@ class Config:
     def get(self, section: str, key: str, default: Any = None) -> Any:
         return self.raw.get(section, {}).get(key, default)
 
+    def set_runtime(self, section: str, key: str, value: Any) -> None:
+        """Override a setting for this process only; config.toml is untouched.
+
+        Used to suppress Telegram while regenerating old summaries — correcting
+        the stored record must not replay months of digests to the channel.
+        """
+        self.raw.setdefault(section, {})[key] = value
+
     def _path(self, section: str, key: str, default: str) -> Path:
         value = Path(self.get(section, key, default))
         return value if value.is_absolute() else self.root / value

@@ -442,3 +442,32 @@ def test_script_detector_is_unreliable_on_short_names():
     assert detect_script("罗家聪") == "traditional"        # wrong, but by design
     assert to_hk_traditional("罗家聪") == "罗家聪"          # so the gate blocks it
     assert to_hk_traditional("罗家聪", force=True) == "羅家聰"
+
+
+# --- regenerating a summary must replace its views, not add to them ---------
+
+def test_regenerating_a_summary_replaces_its_views(conn):
+    """A regenerated summary supersedes the one before it. Its views only
+    overwrite rows whose dedupe key matches, and speaker is part of that key --
+    so the moment attribution changes, which is the entire point of voice
+    identification, the old row survives. Observed after a real regeneration:
+    four superseded rows carrying the wrong speaker sat alongside four new
+    ones, and the scorecard counted both."""
+    from ytdigest.views import View, store_views
+
+    def store(speaker, instrument):
+        view = View(speaker=speaker, start_s=100.0, instrument_raw=instrument,
+                    instrument=None, asset_class=None, direction="long",
+                    thesis="t", reasoning=None, level_type=None, level_value=None,
+                    level_unit=None, ledger_id=None, level_verified=False,
+                    horizon="weeks", conviction=None, entry_basis="immediate",
+                    condition=None, stance=None)
+        store_views(conn, {"id": "v1", "channel_id": "UC1",
+                           "published_at": "2026-01-01T00:00:00+00:00"},
+                    [view], None, "v3")
+
+    store("羅家聰 (KC)", "NVIDIA")            # first pass: model guessed a name
+    store(None, "NVIDIA")                     # regenerated: attribution refused
+    rows = list(conn.execute("SELECT speaker FROM views WHERE video_id='v1'"))
+    assert len(rows) == 1, "superseded view survived the regeneration"
+    assert rows[0]["speaker"] is None

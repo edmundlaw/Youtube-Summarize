@@ -507,6 +507,79 @@ def scorecard_cmd(resolve: bool, min_graded: int) -> None:
     click.echo("       instrument. Not a failure of the speaker.")
 
 
+@main.command("resummarize")
+@click.argument("video_ids", nargs=-1)
+@click.option("--identified", is_flag=True,
+              help="Every video that has been voice-identified.")
+@click.option("--stale-prompt", is_flag=True,
+              help="Every video whose stored summary predates the current prompt.")
+@click.option("--publish/--no-publish", default=False,
+              help="Re-send to Telegram. Off by default: re-running a prompt "
+                   "over old videos would otherwise replay months of digests.")
+@click.option("--dry-run", is_flag=True)
+def resummarize_cmd(video_ids, identified, stale_prompt, publish, dry_run) -> None:
+    """Regenerate summaries for videos whose transcript already exists.
+
+    Needed whenever the prompt changes. `retry` re-runs every stage including
+    fetch; this re-runs only generation, which is the part a prompt change
+    actually invalidates. Views are re-extracted afterwards so speaker
+    attribution and levels reflect the new summary.
+    """
+    from .runner import stage_publish, stage_summarize
+    from .summarize import PROMPT_VERSION
+
+    cfg, conn = _open()
+    wanted = list(video_ids)
+    if identified:
+        wanted += [r[0] for r in conn.execute(
+            "SELECT DISTINCT video_id FROM segment_speakers")]
+    if stale_prompt:
+        wanted += [r[0] for r in conn.execute(
+            "SELECT v.id FROM videos v JOIN summaries s ON s.video_id = v.id "
+            "WHERE v.status = ? GROUP BY v.id HAVING MAX(s.prompt_version) != ?",
+            (D.DONE, PROMPT_VERSION))]
+    seen, targets = set(), []
+    for vid in wanted:                       # de-dupe, keep order
+        if vid not in seen:
+            seen.add(vid)
+            targets.append(vid)
+    if not targets:
+        click.echo("nothing to do — pass video ids, --identified or --stale-prompt")
+        return
+
+    click.echo(f"{len(targets)} video(s) to regenerate at prompt {PROMPT_VERSION}"
+               f"{' (dry run)' if dry_run else ''}")
+    if dry_run:
+        for vid in targets:
+            click.echo(f"  {vid}")
+        return
+
+    ok = failed = 0
+    for vid in targets:
+        row = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
+        if row is None:
+            click.echo(f"  {vid}: unknown"); failed += 1; continue
+        video = dict(row)
+        try:
+            stage_summarize(cfg, conn, video)
+            # Publishing rewrites the markdown and re-extracts views. Telegram
+            # is suppressed unless asked for, so the record can be corrected
+            # without re-notifying.
+            telegram = cfg.get("publish", "telegram", False)
+            if not publish:
+                cfg.set_runtime("publish", "telegram", False)
+            try:
+                stage_publish(cfg, conn, video)
+            finally:
+                cfg.set_runtime("publish", "telegram", telegram)
+            click.echo(f"  {vid}: ok")
+            ok += 1
+        except Exception as exc:             # noqa: BLE001 — report and continue
+            click.echo(f"  {vid}: FAILED {str(exc)[:120]}")
+            failed += 1
+    click.echo(f"done: {ok} regenerated, {failed} failed")
+
+
 @main.command("enroll")
 @click.argument("speaker")
 @click.option("--video", "videos", multiple=True, required=True,

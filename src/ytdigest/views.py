@@ -407,6 +407,20 @@ def store_views(conn, video: dict, views: list[View], summary_id: int | None,
 
     written = 0
     with transaction(conn):
+        # Replace this video's views rather than adding to them. A regenerated
+        # summary supersedes the one before it, and its views only overwrite
+        # rows whose dedupe key happens to match -- speaker is part of that key,
+        # so the moment attribution changes (a guessed name becoming refused,
+        # which is the whole point of voice identification) the old row survives
+        # untouched. Observed after regenerating one video: four superseded rows
+        # sat alongside the four new ones, still carrying the wrong speaker, and
+        # the scorecard counted both.
+        #
+        # Views are derived data -- re-extractable from the stored summary --
+        # and outcomes are recomputed from prices, so nothing irreplaceable is
+        # lost. The delete is inside the transaction, so a failure part-way
+        # leaves the old set intact rather than none at all.
+        conn.execute("DELETE FROM views WHERE video_id = ?", (video["id"],))
         for view in views:
             if identified:
                 voiced = _voice_speaker(conn, video["id"], view.start_s)
