@@ -519,7 +519,7 @@ def enroll_cmd(speaker: str, videos: tuple[str, ...]) -> None:
     whole subsystem exists to prevent.
     """
     from .views import canonical_speaker
-    from .voice import audio_for, enroll
+    from .voice import audio_for, enroll, purity_warning
 
     cfg, conn = _open()
     canonical = canonical_speaker(speaker) or speaker
@@ -543,7 +543,14 @@ def enroll_cmd(speaker: str, videos: tuple[str, ...]) -> None:
             manager.__exit__(None, None, None)
 
     click.echo(f"enrolled {result['speaker']}: {result['windows']} windows, "
-               f"{result['seconds'] / 60:.0f} min of voice. Audio deleted.")
+               f"{result['seconds'] / 60:.0f} min of voice, "
+               f"purity {result['purity']:.0%}. Audio deleted.")
+    warning = purity_warning(result)
+    if warning:
+        click.echo("")
+        click.secho(f"WARNING: {warning}", fg="yellow")
+        click.echo("Delete it with:  ytdigest unenroll "
+                   f"'{result['speaker']}'")
 
 
 @main.command("identify")
@@ -580,6 +587,28 @@ def identify_cmd(video_id: str, threshold: float | None, margin: float | None) -
     click.echo(f"{named}/{len(rows)} segments attributed. Audio deleted.")
     for name, count in sorted(tally.items(), key=lambda kv: -kv[1]):
         click.echo(f"  {name:<24} {count:>4}")
+
+
+@main.command("unenroll")
+@click.argument("speaker")
+def unenroll_cmd(speaker: str) -> None:
+    """Delete a voiceprint. Segments already attributed with it are cleared too,
+    since they were decided by a voiceprint no longer trusted."""
+    from .views import canonical_speaker
+
+    _, conn = _open()
+    canonical = canonical_speaker(speaker) or speaker
+    with D.transaction(conn):
+        cleared = conn.execute(
+            "UPDATE segment_speakers SET speaker=NULL WHERE speaker=?",
+            (canonical,)).rowcount
+        conn.execute(
+            "UPDATE views SET speaker=NULL, attribution='none' "
+            "WHERE speaker=? AND attribution='voice'", (canonical,))
+        gone = conn.execute("DELETE FROM voiceprints WHERE speaker=?",
+                            (canonical,)).rowcount
+    click.echo(f"removed {gone} voiceprint(s) for {canonical}; "
+               f"cleared {cleared} segment attributions.")
 
 
 @main.command("voices")

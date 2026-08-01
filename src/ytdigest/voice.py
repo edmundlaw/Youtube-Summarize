@@ -247,7 +247,9 @@ def enroll(conn, speaker: str, wav_paths: list[Path], source_note: str,
             f"only {len(vectors)} usable windows for {speaker}; "
             "need at least 10 to build a voiceprint worth trusting")
 
-    mean = _l2(np.mean(np.stack(vectors), axis=0))
+    stacked = np.stack(vectors)
+    mean = _l2(np.mean(stacked, axis=0))
+    purity = float((stacked @ mean > PURITY_SIMILARITY).mean())
     with transaction(conn):
         conn.execute(
             "INSERT INTO voiceprints (speaker,embedding,dim,model,n_clips,"
@@ -259,7 +261,52 @@ def enroll(conn, speaker: str, wav_paths: list[Path], source_note: str,
             (speaker, _pack(mean), DIM, MODEL, len(vectors), total_s,
              source_note, now_iso(), now_iso()),
         )
-    return {"speaker": speaker, "windows": len(vectors), "seconds": total_s}
+    return {"speaker": speaker, "windows": len(vectors), "seconds": total_s,
+            "purity": purity}
+
+
+#: Contamination check, calibrated on real embeddings. Two earlier ideas were
+#: tried and both failed on measurement rather than in theory:
+#:
+#:   * share of windows above the 0.60 identification threshold -- useless,
+#:     because with two speakers the mean sits between them and both score well
+#:     above it (65% for a deliberate 50/50 mix, against 82% for genuine solo).
+#:   * two-means centroid separation -- worse than useless: the deliberately
+#:     mixed source scored *highest* (0.550) and a real two-person interview
+#:     *lowest* (0.180). Within one recording the dominant variation is acoustic
+#:     conditions, not speaker identity, so the clusters are noise.
+#:
+#: What does separate, measured at similarity 0.70:
+#:
+#:     genuine solo        52%, 74%, 78%, 82%
+#:     50/50 two speakers  32%
+#:     two-person interview 2%
+#:
+#: So: share of enrolment windows within 0.70 of their own mean. This is a
+#: warning, not a proof -- the gap between 32% and 52% is real but not wide,
+#: and a genuinely solo recording with heavy music or phone audio could dip
+#: into it. It is checked because titles are not reliable: 「文錦期權譜」 lists
+#: one host and another name presents some episodes.
+PURITY_SIMILARITY = 0.70
+MIN_PURITY = 0.45
+
+
+def purity_warning(result: dict) -> str | None:
+    """Flag a voiceprint that looks like it was averaged over two people.
+
+    This is the worst input error possible here: it does not fail loudly, it
+    produces a voiceprint that matches neither person well and attributes
+    whichever of them happens to score higher. Titles are not reliable enough
+    to catch it -- 「文錦期權譜」 lists one host but another name presents some
+    episodes -- so the check is on the audio itself.
+    """
+    purity = result.get("purity")
+    if purity is None or purity >= MIN_PURITY:
+        return None
+    return (f"only {purity:.0%} of windows match the resulting voiceprint "
+            f"(expect >{MIN_PURITY:.0%} for one speaker). The source audio "
+            "probably contains more than one person — check the video for a "
+            "co-host or guest before trusting this voiceprint.")
 
 
 def voiceprints(conn) -> dict[str, list[float]]:

@@ -249,3 +249,52 @@ def test_without_identification_the_name_is_marked_as_guessed(conn):
     row = _store_view(conn, speaker="羅家聰 (KC)")
     assert row["speaker"] == "羅家聰 (KC)"
     assert row["attribution"] == "guessed"
+
+
+# --- enrolment purity -------------------------------------------------------
+
+def _two_speakers(shared=0.816):
+    """Two voiceprints ~0.40 apart, which is what different hosts actually
+    measure at on this corpus. Orthogonal synthetic vectors would make these
+    tests pass for the wrong reason: with truly independent speakers the mean
+    lands nowhere near either, which is not the situation being guarded
+    against. The shared component stands for the common language, subject and
+    recording chain that put real hosts so close together."""
+    import numpy as np
+    shared_axis = np.zeros(voice.DIM, dtype="float32"); shared_axis[0] = 1.0
+    own_a = np.zeros(voice.DIM, dtype="float32"); own_a[1] = 1.0
+    own_b = np.zeros(voice.DIM, dtype="float32"); own_b[2] = 1.0
+    return (voice._l2(shared * shared_axis + own_a),
+            voice._l2(shared * shared_axis + own_b))
+
+
+def _windows(centre, n, seed, sigma=0.05):
+    """Sigma chosen so within-speaker similarity lands at ~0.82, matching the
+    measured spread of real enrolment audio."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    return [voice._l2(centre + rng.normal(0, sigma, voice.DIM).astype("float32"))
+            for _ in range(n)]
+
+
+def test_purity_flags_a_voiceprint_averaged_over_two_people(conn, monkeypatch):
+    """The worst input error possible here: enrolling from a video that is not
+    actually solo. It fails silently, producing a voiceprint that matches
+    neither person well and attributing whichever of them scores higher."""
+    a, b = _two_speakers()
+    clips = _windows(a, 30, 0) + _windows(b, 30, 1)
+    monkeypatch.setattr(voice, "embed_slices", lambda *x, **k: dict(enumerate(clips)))
+    monkeypatch.setattr(voice, "audio_duration_s", lambda p: 900.0)
+    result = voice.enroll(conn, "mixed", [pathlib.Path("a.wav")], "test")
+    assert result["purity"] < voice.MIN_PURITY
+    assert "more than one person" in voice.purity_warning(result)
+
+
+def test_purity_is_quiet_for_a_genuinely_solo_source(conn, monkeypatch):
+    a, _ = _two_speakers()
+    clips = _windows(a, 60, 2)
+    monkeypatch.setattr(voice, "embed_slices", lambda *x, **k: dict(enumerate(clips)))
+    monkeypatch.setattr(voice, "audio_duration_s", lambda p: 900.0)
+    result = voice.enroll(conn, "solo", [pathlib.Path("a.wav")], "test")
+    assert result["purity"] >= voice.MIN_PURITY
+    assert voice.purity_warning(result) is None
