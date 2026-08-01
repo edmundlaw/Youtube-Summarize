@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .config import REPO_ROOT
 from .db import now_iso, transaction
+from .normalize import to_hk_traditional
 from .numbers import find_numbers
 
 DIRECTIONS = {"long", "short", "neutral", "avoid", "exit"}
@@ -87,10 +88,16 @@ def canonical_speaker(name: str | None, root: Path | None = None) -> str | None:
     is introducing them. Left alone, a track record splits across three names
     and counts none of them correctly. Anything unrecognised returns None —
     an unattributed view is useful, a misattributed one is worse than useless.
+
+    Names are folded to HK Traditional first. The model returns Simplified for
+    them often enough to matter — observed writing 罗家聪 where the roster says
+    羅家聰 — and the roster is Traditional throughout. 罗家聪 (KC) only resolved
+    because "KC" happens to be a Latin substring; bare 罗家聪 and 文锦辉 matched
+    nothing and silently lost their speaker.
     """
     if not name:
         return None
-    text = name.strip()
+    text = to_hk_traditional(name.strip(), force=True)
     lookup, not_people = _load_people(root)
     low = text.lower()
     if any(bad in low for bad in not_people) or "|" in text or len(text) > 30:

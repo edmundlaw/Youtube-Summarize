@@ -31,14 +31,22 @@ def detect_script(text: str) -> str:
     return "simplified" if any(c in _SIMPLIFIED_ONLY for c in text) else "traditional"
 
 
-def to_hk_traditional(text: str) -> str:
+def to_hk_traditional(text: str, force: bool = False) -> str:
     """Convert Simplified to HK Traditional, but only when it is Simplified.
 
     Colloquial Cantonese (嘅 咗 喺 唔 哋 嘢) passes through untouched — OpenCC's
     s2hk does not standardise it, and we must not either. What the speaker said
     is information; 'correcting' it to written Chinese loses meaning.
+
+    `force` skips the detector. `detect_script` tests against a 26-character
+    sample set, which is sound for a transcript — a long one will contain some
+    of them — and useless for a three-character name: 罗家聪, 文锦辉 and 冼润棠
+    are all reported traditional and pass through unconverted, so the roster
+    lookup misses and the speaker is silently lost. Conversion is verified safe
+    to apply unconditionally: traditional names and colloquial Cantonese are
+    both returned unchanged.
     """
-    if detect_script(text) != "simplified":
+    if not force and detect_script(text) != "simplified":
         return text
     try:
         from opencc import OpenCC

@@ -407,3 +407,38 @@ def test_identified_but_all_refused_still_marks_every_line_unknown(conn):
     segs = [Segment(id=0, start=0.0, end=5.0, text="A", lang="yue",
                     confidence=None, flags=[])]
     assert "主持：A" in _transcript_text(segs, m)
+
+
+# --- simplified names from the model ----------------------------------------
+
+def test_simplified_speaker_names_resolve_to_the_roster():
+    """The model returns Simplified for these often enough to matter -- observed
+    writing 罗家聪 where the roster says 羅家聰. Only the form carrying a Latin
+    alias resolved, by accident; the rest silently lost their speaker, and a
+    lost speaker is a view that can never join a track record."""
+    from ytdigest.views import canonical_speaker
+    for simplified, expected in (
+        ("罗家聪", "羅家聰 (KC)"),
+        ("罗家聪 (KC)", "羅家聰 (KC)"),
+        ("文锦辉", "文錦輝"),
+        ("冼润棠", "冼潤棠 (棠哥)"),
+        ("Eugene 罗尚沛", "Eugene 羅尚沛"),
+    ):
+        assert canonical_speaker(simplified) == expected, simplified
+
+
+def test_traditional_and_colloquial_are_untouched_by_the_fold():
+    """Forcing conversion must not standardise colloquial Cantonese -- 嘅咗喺唔
+    carry meaning and the project rule is to preserve them."""
+    from ytdigest.normalize import to_hk_traditional
+    for text in ("羅家聰", "文錦輝", "嘅咗喺唔哋嘢", "Eugene 羅尚沛"):
+        assert to_hk_traditional(text, force=True) == text
+
+
+def test_script_detector_is_unreliable_on_short_names():
+    """Documents why `force` exists: the detector samples a 26-character set,
+    which a three-character name will almost never contain."""
+    from ytdigest.normalize import detect_script, to_hk_traditional
+    assert detect_script("罗家聪") == "traditional"        # wrong, but by design
+    assert to_hk_traditional("罗家聪") == "罗家聪"          # so the gate blocks it
+    assert to_hk_traditional("罗家聪", force=True) == "羅家聰"
