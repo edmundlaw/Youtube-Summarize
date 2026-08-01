@@ -25,6 +25,15 @@ asr = [
     "soundfile>=0.12",
     "onnxruntime>=1.19",  # silero-vad
 ]
+# Speaker identification. Captions have no diarization, so on a multi-host show
+# every name in a summary was a guess without this. Kept optional because it
+# pulls torch (~2 GB) and the pipeline degrades honestly without it: no
+# voiceprints means no attribution, rather than a wrong one.
+voice = [
+    "torch>=2.4",
+    "speechbrain>=1.0",
+    "numpy>=1.26",
+]
 dev = [
     "pytest>=8.0",
     "pyflakes>=3.2",

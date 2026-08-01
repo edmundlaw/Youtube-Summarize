@@ -228,7 +228,12 @@ def scorecard(conn, min_graded: int = 5) -> list[dict]:
         "SELECT COALESCE(speaker,'(unattributed)') AS speaker, "
         "  SUM(outcome='hit') AS hit, SUM(outcome='missed') AS missed, "
         "  SUM(outcome='void') AS void, SUM(outcome='unresolvable') AS unresolvable, "
-        "  SUM(outcome='pending') AS pending, COUNT(*) AS total "
+        "  SUM(outcome='pending') AS pending, COUNT(*) AS total, "
+        # How the name was arrived at. A record built from voice-identified
+        # views means something; one built from the model's guesses does not,
+        # and the two must never be presented as the same thing.
+        "  SUM(attribution='voice') AS by_voice, "
+        "  SUM(attribution='guessed') AS by_guess "
         "FROM views GROUP BY speaker ORDER BY total DESC"
     ):
         graded = (row["hit"] or 0) + (row["missed"] or 0)
@@ -241,6 +246,8 @@ def scorecard(conn, min_graded: int = 5) -> list[dict]:
             "pending": row["pending"] or 0,
             "total": row["total"],
             "graded": graded,
+            "by_voice": row["by_voice"] or 0,
+            "by_guess": row["by_guess"] or 0,
             # None means "no measurable record", NOT zero.
             "hit_rate": (row["hit"] / graded) if graded >= min_graded else None,
         })

@@ -152,7 +152,8 @@ def hosts_from_title(title: str) -> list[str]:
 
 
 def _system_prompt(ledger: list[LedgerEntry], lang: str,
-                   hosts: list[str] | None = None) -> str:
+                   hosts: list[str] | None = None,
+                   voice_identified: bool = False) -> str:
     target = "English" if lang == "en" else "繁體中文（香港）"
     glossary = ", ".join(load_glossary())
     allowed = "\n".join(
@@ -163,6 +164,22 @@ def _system_prompt(ledger: list[LedgerEntry], lang: str,
     host_rule = (
         "呢一集嘅主持只有：" + "、".join(hosts) + "。"
         if hosts else "片名冇列出主持，所以一律寫「主持」，唔好用任何人名。"
+    )
+    # With voice identification the name on each line is measured, not guessed,
+    # so the model must copy it rather than reason about it. Without it, the
+    # model has no way to know who spoke and must not pretend otherwise.
+    voice_rule = (
+        "每一行字幕前面嘅名，係用聲紋認出嚟嘅，唔係估。\n"
+        "  ‧ 寫住人名嗰行 → 就係嗰個人講，直接用返個名。\n"
+        "  ‧ 寫住「主持」嗰行 → 認唔出（可能幾個人一齊講，或者未錄過佢聲）。\n"
+        "    呢啲行一律寫「主持」，唔准按上文下理估係邊個。\n"
+        "唔准改行頭嗰個名，亦唔准將「主持」嗰行寫成某個人講。"
+        if voice_identified else
+        "字幕係冇標明邊個講嘢嘅。所以【預設一律寫「主持」】。\n"
+        "只有以下情況先可以寫人名：\n"
+        "  ‧ 有人叫佢個名（例：「KC你點睇？」→ 之後嗰段係 KC 講）\n"
+        "  ‧ 佢自報身份（例：「我上個禮拜喺韓國……」而片名講明只有佢去過）\n"
+        "冇上面嘅憑據就寫「主持」。寫錯邊個講，比冇寫名嚴重得多。"
     )
     return f"""你為香港投資者提煉財經影片。輸出語言：{target}。
 
@@ -186,11 +203,7 @@ def _system_prompt(ledger: list[LedgerEntry], lang: str,
 唔准將主張歸咎於名單以外嘅人。節目中間會播其他節目嘅宣傳片，
 入面會提到第二個節目嘅主持名。嗰啲名唔屬於呢一集，唔可以當佢哋喺度講嘢。
 
-字幕係冇標明邊個講嘢嘅。所以【預設一律寫「主持」】。
-只有以下情況先可以寫人名：
-  ‧ 有人叫佢個名（例：「KC你點睇？」→ 之後嗰段係 KC 講）
-  ‧ 佢自報身份（例：「我上個禮拜喺韓國……」而片名講明只有佢去過）
-冇上面嘅憑據就寫「主持」。寫錯邊個講，比冇寫名嚴重得多。
+{voice_rule}
 
 【引述唔等於主張】
 主持之間會互相引用、質問對方之前講過嘅嘢。例如
@@ -337,8 +350,35 @@ def _sample_ledger(ledger: list[LedgerEntry], limit: int) -> list[LedgerEntry]:
     return [entries[int(i * stride)] for i in range(limit)]
 
 
-def _transcript_text(segments) -> str:
-    return "\n".join(f"[{_mmss(s.start)}] {s.text}" for s in segments)
+def _transcript_text(segments, speakers: dict[float, str] | None = None) -> str:
+    """Render for the prompt, prefixing the speaker where voice identified one.
+
+    Only segments that cleared the voice threshold get a name. Everything else
+    is rendered `[主持]`, which is a real answer rather than a gap: it tells the
+    model that this line's speaker is genuinely unknown, so it must not invent
+    one. Before this existed the model saw an unlabelled wall of text on a
+    three-host show and attributed by guesswork.
+    """
+    lines = []
+    for s in segments:
+        who = (speakers or {}).get(round(float(s.start), 3))
+        lines.append(f"[{_mmss(s.start)}] {who or '主持'}：{s.text}"
+                     if speakers is not None else f"[{_mmss(s.start)}] {s.text}")
+    return "\n".join(lines)
+
+
+def speaker_map(conn, video_id: str) -> dict[float, str] | None:
+    """Voice-identified speaker per segment start, or None if never run.
+
+    None and an all-unattributed map mean different things: the first says
+    identification has not happened, the second says it happened and refused.
+    """
+    rows = list(conn.execute(
+        "SELECT start_s, speaker FROM segment_speakers WHERE video_id = ?",
+        (video_id,)))
+    if not rows:
+        return None
+    return {round(float(r["start_s"]), 3): r["speaker"] for r in rows if r["speaker"]}
 
 
 def estimate_tokens(text: str) -> int:
@@ -383,16 +423,19 @@ def summarize(
     lang: str,
     log=None,
     title: str = "",
+    speakers: dict[float, str] | None = None,
 ) -> tuple[dict, str, list]:
     """Generate, validate, retry once, and return (payload, state, checks)."""
     engine = DeepSeek(cfg)
-    system = _system_prompt(ledger, lang, hosts_from_title(title))
-    body = _transcript_text(segments)
+    system = _system_prompt(ledger, lang, hosts_from_title(title),
+                            voice_identified=speakers is not None)
+    body = _transcript_text(segments, speakers)
     max_tokens = int(cfg.get("summarize", "max_tokens", 10000))
 
     threshold = int(cfg.get("summarize", "map_reduce_threshold_tokens", 40000))
     if estimate_tokens(body) > threshold:
-        body = _map_reduce(engine, system, segments, max_tokens, cfg, log)
+        body = _map_reduce(engine, system, segments, max_tokens, cfg, log,
+                           speakers)
 
     # Malformed JSON from the model is non-deterministic — the same input
     # parses fine on the next attempt. Regenerating immediately is far cheaper
@@ -436,7 +479,8 @@ def summarize(
 
 
 def _map_reduce(engine: DeepSeek, system: str, segments, max_tokens: int,
-                cfg: Config, log=None) -> str:
+                cfg: Config, log=None,
+                speakers: dict[float, str] | None = None) -> str:
     """Chunk-level summaries, then a synthesis pass.
 
     The ledger travels in `system`, so it is present at both levels and the
@@ -463,7 +507,7 @@ def _map_reduce(engine: DeepSeek, system: str, segments, max_tokens: int,
         try:
             text = engine.complete(
                 system + "\n\n（呢個係影片其中一段，先做分段摘要）",
-                _transcript_text(chunk),
+                _transcript_text(chunk, speakers),
                 max_tokens,
             )
         except StageError as exc:

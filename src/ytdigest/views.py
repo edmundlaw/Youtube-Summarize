@@ -339,6 +339,16 @@ def _offset(ts) -> float:
 # --- storage ---------------------------------------------------------------
 
 
+def _voice_speaker(conn, video_id: str, start_s: float) -> str | None:
+    """Enrolled speaker covering this timestamp, per stored identification."""
+    row = conn.execute(
+        "SELECT speaker FROM segment_speakers WHERE video_id = ? AND start_s <= ? "
+        "AND end_s >= ? AND speaker IS NOT NULL ORDER BY start_s DESC LIMIT 1",
+        (video_id, start_s, start_s),
+    ).fetchone()
+    return row["speaker"] if row else None
+
+
 def store_views(conn, video: dict, views: list[View], summary_id: int | None,
                 prompt_version: str) -> int:
     """Resolve, verify and persist. Returns the number of rows written."""
@@ -350,9 +360,28 @@ def store_views(conn, video: dict, views: list[View], summary_id: int | None,
     if base.tzinfo is None:
         base = base.replace(tzinfo=UTC)
 
+    # Voice identification, where it has run, outranks whatever name the model
+    # put on a view. One is a measurement against an enrolled voiceprint; the
+    # other is inference from unlabelled text. When they disagree the
+    # measurement wins, and when the voice could not be identified the view is
+    # left unattributed rather than falling back to the model's guess -- that
+    # fallback is exactly how a wrong name reaches the track record.
+    identified = conn.execute(
+        "SELECT COUNT(*) FROM segment_speakers WHERE video_id = ?",
+        (video["id"],),
+    ).fetchone()[0] > 0
+
     written = 0
     with transaction(conn):
         for view in views:
+            if identified:
+                voiced = _voice_speaker(conn, video["id"], view.start_s)
+                speaker = voiced
+                attribution = "voice" if voiced else "none"
+            else:
+                speaker = view.speaker
+                attribution = "guessed" if view.speaker else "none"
+
             symbol, asset_class = resolve_instrument(conn, view.instrument_raw)
             ledger_id, verified = verify_level(
                 conn, video["id"], view.level_value, view.level_unit
@@ -369,19 +398,20 @@ def store_views(conn, video: dict, views: list[View], summary_id: int | None,
                 " instrument, instrument_raw, asset_class, direction, conviction, thesis, "
                 " reasoning, level_type, level_value, level_unit, ledger_id, level_verified, "
                 " horizon, horizon_ends_at, outcome, summary_id, prompt_version, created_at, "
-                " entry_basis, condition, stance) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?) "
+                " entry_basis, condition, stance, attribution) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?) "
                 "ON CONFLICT DO UPDATE SET "
                 "  thesis=excluded.thesis, reasoning=excluded.reasoning, "
                 "  instrument=excluded.instrument, level_verified=excluded.level_verified, "
-                "  ledger_id=excluded.ledger_id, summary_id=excluded.summary_id",
-                (video["id"], video["channel_id"], view.speaker,
+                "  ledger_id=excluded.ledger_id, summary_id=excluded.summary_id, "
+                "  attribution=excluded.attribution",
+                (video["id"], video["channel_id"], speaker,
                  stated_at.isoformat(timespec="seconds"), view.start_s,
                  symbol, view.instrument_raw, asset_class, view.direction,
                  view.conviction, view.thesis, view.reasoning, view.level_type,
                  view.level_value, view.level_unit, ledger_id, int(verified),
                  view.horizon, ends_at, summary_id, prompt_version, now_iso(),
-                 view.entry_basis, view.condition, view.stance),
+                 view.entry_basis, view.condition, view.stance, attribution),
             )
             written += 1
     return written

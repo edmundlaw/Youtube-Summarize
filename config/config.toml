@@ -39,7 +39,21 @@ prefer_manual_subs = true
 # Delete the wav after a successful transcribe.
 keep_audio         = false
 
-[summarize]
+[voice]
+# Speaker identification. Captions carry no speaker labels, so on a multi-host
+# show any name in a summary was a guess until this existed.
+enabled   = true
+# Calibrated on this corpus (see voice.py): 0.60 accepts 82% of true-speaker
+# audio and 0% of a different host's. Raise it to attribute less but more
+# safely; a missed attribution costs a data point, a wrong one corrupts a
+# person's track record.
+threshold = 0.60
+# Best match must beat the runner-up by this much, else the segment is treated
+# as cross-talk and left unattributed.
+margin    = 0.08
+# Audio is downloaded per video, embedded, and deleted. It is ~570 MB for a
+# 2.5-hour show against ~36 KB of transcript, and is useless once embedded.
+keep_audio = false
 provider       = "deepseek"
 model          = "deepseek-v4-flash"
 escalate_model = "deepseek-v4-pro"   # used for the validator retry pass

@@ -68,9 +68,18 @@ tests in this commit:
   speaker half of this is now constrained (host roster, below); the subject
   half is not — a real 4000 spoken about gold can still be attached to the
   wrong instrument and verify clean.
-- **Speaker attribution is constrained but not validated.** The prompt is given
-  the host list and told trailers name outsiders; nothing checks the output
-  against it the way the ledger checks numbers.
+- **Speaker attribution is now measured, but only for enrolled voices.**
+  `voice.py` matches each caption segment against a voiceprint and `views.
+  attribution` records how each name was obtained. Only 羅家聰 (KC) is enrolled
+  so far; every other host's segments come back unattributed, which is honest
+  but leaves them with no measurable record. Enrolling them needs one solo
+  video each (check the title — 「嘉賓」 or an interview format disqualifies it),
+  or ~60 seconds hand-labelled once.
+- **Views stored before voice ID exist carry `attribution='guessed'`.** They
+  were attributed by a model reading unlabelled captions and are not
+  trustworthy for judging a person. The scorecard shows voice and guess counts
+  separately; do not pool them. Re-running `identify` on a video and then
+  `views-reindex` upgrades it.
 - **Error text is persisted and forwarded unredacted.** `logging.py` scrubs
   structlog events, but `stage_runs.error_text` is written raw, printed by
   `status`, and 80 chars of it are sent to Telegram. Not yet fixed.

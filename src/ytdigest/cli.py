@@ -486,20 +486,114 @@ def scorecard_cmd(resolve: bool, min_graded: int) -> None:
 
     rows = scorecard(conn, min_graded)
     click.echo(f"{'speaker':<20}{'hit':>5}{'miss':>6}{'rate':>8}"
-               f"{'void':>7}{'unresolv':>10}{'pending':>9}{'total':>7}")
-    click.echo("-" * 72)
+               f"{'void':>7}{'unresolv':>10}{'pending':>9}{'total':>7}"
+               f"{'voice':>7}{'guess':>7}")
+    click.echo("-" * 86)
     for r in rows:
         rate = f"{r['hit_rate']*100:.0f}%" if r["hit_rate"] is not None else "—"
         click.echo(
             f"{r['speaker'][:19]:<20}{r['hit']:>5}{r['missed']:>6}{rate:>8}"
             f"{r['void']:>7}{r['unresolvable']:>10}{r['pending']:>9}{r['total']:>7}"
+            f"{r['by_voice']:>7}{r['by_guess']:>7}"
         )
     click.echo("")
+    click.echo("voice = name confirmed by voiceprint. guess = the model's")
+    click.echo("       inference from unlabelled captions, before voice ID existed.")
+    click.echo("       Only 'voice' counts are trustworthy for judging a person.")
     click.echo("rate is over graded calls only (hit+miss). '—' means too few to judge.")
     click.echo("void = conditional call whose trigger never fired — the speaker")
     click.echo("       never advised acting, so it counts neither way.")
     click.echo("unresolvable = no horizon, no level, unverified level, or unmapped")
     click.echo("       instrument. Not a failure of the speaker.")
+
+
+@main.command("enroll")
+@click.argument("speaker")
+@click.option("--video", "videos", multiple=True, required=True,
+              help="Video IDs where SPEAKER is the only voice. Repeatable.")
+def enroll_cmd(speaker: str, videos: tuple[str, ...]) -> None:
+    """Build a voiceprint from videos where only SPEAKER talks.
+
+    Use solo videos only. A voiceprint averaged over someone else's audio will
+    quietly attribute their calls to SPEAKER, which is the exact failure this
+    whole subsystem exists to prevent.
+    """
+    from .views import canonical_speaker
+    from .voice import audio_for, enroll
+
+    cfg, conn = _open()
+    canonical = canonical_speaker(speaker) or speaker
+    if canonical != speaker:
+        click.echo(f"canonicalised '{speaker}' -> '{canonical}'")
+
+    audio_dir = cfg.data_dir / "audio"
+    paths, keep = [], []
+    try:
+        for video_id in videos:
+            click.echo(f"downloading {video_id}...")
+            manager = audio_for(video_id, audio_dir)
+            path = manager.__enter__()
+            keep.append(manager)
+            paths.append(path)
+            click.echo(f"  {path.stat().st_size / 1e6:.0f} MB")
+        click.echo("embedding (first run downloads the model, ~30s)...")
+        result = enroll(conn, canonical, paths, source_note=",".join(videos))
+    finally:
+        for manager in keep:                      # deletes every wav
+            manager.__exit__(None, None, None)
+
+    click.echo(f"enrolled {result['speaker']}: {result['windows']} windows, "
+               f"{result['seconds'] / 60:.0f} min of voice. Audio deleted.")
+
+
+@main.command("identify")
+@click.argument("video_id")
+@click.option("--threshold", type=float, default=None)
+@click.option("--margin", type=float, default=None)
+def identify_cmd(video_id: str, threshold: float | None, margin: float | None) -> None:
+    """Attribute a video's caption segments to enrolled speakers."""
+    import json as _json
+
+    from .voice import (
+        DEFAULT_MARGIN, DEFAULT_THRESHOLD, audio_for, identify,
+        store_attributions, voiceprints,
+    )
+
+    cfg, conn = _open()
+    if not voiceprints(conn):
+        click.echo("no voiceprints yet — run `ytdigest enroll` first."); return
+
+    path = cfg.data_dir / "normalized" / f"{video_id}.json"
+    if not path.exists():
+        click.echo(f"no transcript for {video_id}"); return
+    segments = _json.loads(path.read_text(encoding="utf-8"))["segments"]
+
+    with audio_for(video_id, cfg.data_dir / "audio") as wav:
+        rows = identify(conn, wav, segments,
+                        threshold if threshold is not None else DEFAULT_THRESHOLD,
+                        margin if margin is not None else DEFAULT_MARGIN)
+    named = store_attributions(conn, video_id, rows)
+
+    tally: dict[str, int] = {}
+    for row in rows:
+        tally[row.speaker or "(unattributed)"] = tally.get(row.speaker or "(unattributed)", 0) + 1
+    click.echo(f"{named}/{len(rows)} segments attributed. Audio deleted.")
+    for name, count in sorted(tally.items(), key=lambda kv: -kv[1]):
+        click.echo(f"  {name:<24} {count:>4}")
+
+
+@main.command("voices")
+def voices_cmd() -> None:
+    """Enrolled voiceprints."""
+    _, conn = _open()
+    rows = list(conn.execute(
+        "SELECT speaker, n_clips, total_s, source_note, updated_at "
+        "FROM voiceprints ORDER BY speaker"))
+    if not rows:
+        click.echo("none enrolled. `ytdigest enroll <name> --video <id>`"); return
+    for r in rows:
+        click.echo(f"{r['speaker']:<22} {r['n_clips']:>4} windows  "
+                   f"{r['total_s'] / 60:>5.0f} min  from {r['source_note']}")
 
 
 @main.command("telegram-setup")

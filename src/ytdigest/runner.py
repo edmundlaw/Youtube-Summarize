@@ -166,6 +166,49 @@ def _mean_confidence(segments) -> float | None:
     return sum(values) / len(values) if values else None
 
 
+def _identify_speakers(cfg: Config, conn, video: dict,
+                       raw_segments: list) -> dict[float, str] | None:
+    """Voice-identify this video's segments, or return None if we cannot.
+
+    Never fatal. Speaker identification improves a summary; it is not required
+    to produce one, and a network failure or a machine without torch installed
+    must not cost the summary itself. Returning None makes the prompt fall back
+    to refusing all attribution, which is the safe direction.
+    """
+    if not cfg.get("voice", "enabled", True):
+        return None
+    try:
+        from .summarize import speaker_map
+        from .voice import (
+            DEFAULT_MARGIN, DEFAULT_THRESHOLD, audio_for, identify,
+            store_attributions, voiceprints,
+        )
+    except ImportError:
+        return None
+
+    existing = speaker_map(conn, video["id"])
+    if existing is not None:                    # already identified; don't re-pay
+        return existing
+    if not voiceprints(conn):
+        log.info("voice.skipped", video_id=video["id"], reason="no voiceprints")
+        return None
+
+    try:
+        with audio_for(video["id"], cfg.data_dir / "audio") as wav:
+            rows = identify(
+                conn, wav, raw_segments,
+                float(cfg.get("voice", "threshold", DEFAULT_THRESHOLD)),
+                float(cfg.get("voice", "margin", DEFAULT_MARGIN)),
+            )
+        named = store_attributions(conn, video["id"], rows)
+        log.info("voice.identified", video_id=video["id"],
+                 attributed=named, segments=len(rows))
+        return speaker_map(conn, video["id"])
+    except Exception as exc:                    # noqa: BLE001 - never fatal
+        log.warning("voice.failed", video_id=video["id"], error=str(exc)[:200])
+        return None
+
+
 def stage_summarize(cfg: Config, conn, video: dict) -> Path:
     from .normalize import LedgerEntry
     from .summarize import PROMPT_VERSION, summarize
@@ -181,10 +224,12 @@ def stage_summarize(cfg: Config, conn, video: dict) -> Path:
     segments = [Segment(**s) for s in data["segments"]]
     ledger = [LedgerEntry(**e) for e in data["ledger"]]
 
+    speakers = _identify_speakers(cfg, conn, video, data["segments"])
+
     transcript_artifact = D.get_artifact(conn, video["id"], "transcript")
     payload, state, checks = summarize(
         cfg, segments, ledger, data.get("dominant_lang", "yue"), log,
-        title=video.get("title", ""),
+        title=video.get("title", ""), speakers=speakers,
     )
 
     out = cfg.data_dir / "normalized" / f"{video['id']}.summary.json"

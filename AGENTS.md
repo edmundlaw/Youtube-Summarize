@@ -75,6 +75,50 @@ generation. The ledger is the authority; the LLM is not.
   `None` for them. Do not default it to 1.0 to make downstream code simpler —
   the validator would then treat unverified figures as verified.
 
+## Captions have no speaker labels — that is what `voice.py` is for
+
+Auto-captions carry no diarization at all. On a three-host show the model had
+no way to know who spoke, and the prompt made it worse by demanding `speaker`
+be a name from the roster *while also* saying "write 主持 if unsure" — a
+contradiction it settled by guessing. Caught in the wild: a NVIDIA call at
+120 attributed to KC, when the transcript shows KC saying 「你唔係120蚊咩，我
+記得」 — quoting **Eugene's** earlier number back at him. Voice ID later
+confirmed KC was not even the speaker in that segment (score 0.35).
+
+Two things that look like fixes and are not:
+
+- **Vocative cues** ("KC你點睇"). Measured across the whole corpus: 6 hits in
+  9,793 segments, **0.1%**. Useless as a primary mechanism.
+- **Asking the model to try harder.** It has no signal to reason from. More
+  instruction produces more confident guessing, not better attribution.
+
+The working approach is speaker *identification*, not diarization: enrol a
+voiceprint per host, then match each caption segment against it.
+
+- **Enrolment is free for anyone with a solo video** — every second is
+  definitionally them. Check the title first: 【由錢入心】 is an interview and
+  「嘉賓」 means a guest is present. A voiceprint averaged over two people
+  quietly attributes one's calls to the other.
+- **Thresholds are calibrated on this corpus, not from a paper.** Different
+  hosts here score ~0.40 against each other — same language, same subject,
+  similar recording chain — where unrelated audio scores ~0.1. A threshold
+  taken from published benchmarks would be far too low. Measured: 0.55 admits
+  0% of a different host, 0.60 costs one point of recall and buys headroom.
+- Two gates, both required: absolute threshold *and* margin over the runner-up.
+  Near-equal scores mean cross-talk, which is exactly where attribution must
+  not be attempted.
+- **Voice outranks the model.** Where identification has run, its answer
+  replaces whatever name the model produced, and its refusal drops the name
+  entirely rather than falling back to the guess. `views.attribution` records
+  which mechanism was used — `voice` counts are trustworthy, `guessed` ones
+  predate this and are not.
+- Audio is downloaded per video and **deleted in a `finally`**. A 2.5-hour show
+  is ~570 MB of 16 kHz wav against ~36 KB of transcript, and it is useless once
+  embedded.
+- Read wavs with stdlib `wave`, not torchaudio: `fetch_audio` always writes
+  16 kHz mono 16-bit PCM, and torchaudio moved its top-level `load`/`info` out
+  from under us at 2.13.
+
 ## Long videos get a thinner summary — prefer the parts
 
 Measured on the same episode of 錢錢錢打到嚟, which the channel posts both as
@@ -113,7 +157,17 @@ not the same as being covered well.
 .venv/bin/ytdigest status          # queue, oldest pending, abandoned items
 .venv/bin/ytdigest doctor          # run this first when something is wrong
 .venv/bin/ytdigest channel add <url>
+
+.venv/bin/ytdigest scorecard       # per-speaker record, with exclusions shown
+.venv/bin/ytdigest voices          # enrolled voiceprints
+.venv/bin/ytdigest enroll <name> --video <solo-video-id> [--video ...]
+.venv/bin/ytdigest identify <video-id>   # attribute segments; deletes audio after
 ```
+
+Speaker identification needs the optional extra:
+`uv pip install --python .venv/bin/python -e '.[voice]'` (~2 GB, pulls torch).
+Without it the pipeline still runs — it just attributes nobody, which is the
+safe direction.
 
 ## Build order
 
