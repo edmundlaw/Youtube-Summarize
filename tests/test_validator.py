@@ -529,3 +529,51 @@ def test_truncated_completion_is_named_not_left_to_the_json_parser(monkeypatch):
                         lambda *a, **k: contextlib.nullcontext(response))
     with P.raises(StageError, match="truncated at max_tokens"):
         _engine()._once("s", "u", 12000, 10)
+
+
+def test_truncation_grows_the_budget_instead_of_repeating_the_same_request():
+    """Retrying an identical request after truncation cannot help. Reasoning
+    cost scales with how dense the material is, so no fixed max_tokens survives
+    every video -- one 37-minute options show spent 15,795 of 16,000 tokens
+    thinking and emitted 590 characters."""
+    import pathlib
+
+    from ytdigest.config import load_config
+    from ytdigest.interfaces import Segment
+    from ytdigest.normalize import build_ledger
+    from ytdigest.summarize import _Truncated, summarize
+    import ytdigest.summarize as S
+
+    segments = [Segment(id=0, start=0.0, end=5.0, text="恒指見二萬六", lang="yue",
+                        confidence=None, flags=[])]
+    ledger = build_ledger(segments)
+    budgets = []
+
+    class Engine:
+        def __init__(self, cfg, model=None):
+            pass
+
+        def complete(self, system, user, max_tokens, timeout=None):
+            budgets.append(max_tokens)
+            if len(budgets) < 2:
+                raise _Truncated("completion truncated at max_tokens", "retryable")
+            return ('{"theses":[],"actionable":[],"disagreements":[],'
+                    '"risks":[],"numbers":[],"views":[]}')
+
+    original = S.DeepSeek
+    S.DeepSeek = Engine
+    try:
+        summarize(load_config(pathlib.Path(".")), segments, ledger, "yue", None, title="t")
+    finally:
+        S.DeepSeek = original
+
+    assert len(budgets) == 2
+    assert budgets[1] > budgets[0], "retried with the same budget"
+    assert budgets[1] <= S._BUDGET_CEILING
+
+
+def test_budget_growth_is_capped():
+    from ytdigest.summarize import _BUDGET_CEILING, _BUDGET_GROWTH
+    assert _BUDGET_GROWTH > 1.0
+    assert _BUDGET_CEILING >= 20000        # room for a dense show
+    assert _BUDGET_CEILING <= 100000       # but a pathological input cannot bill on

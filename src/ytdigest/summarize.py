@@ -39,6 +39,23 @@ class _EmptyCompletion(StageError):
     """
 
 
+class _Truncated(StageError):
+    """The answer was cut off at max_tokens.
+
+    Distinct from _EmptyCompletion because the remedy differs: retrying an
+    identical request cannot help, but retrying with a larger budget can.
+    """
+
+
+#: How far the budget may be stretched when a generation is truncated, and how
+#: many times. Reasoning cost scales with how dense the material is, so no fixed
+#: value survives every video: one 37-minute options show spent 15,795 of 16,000
+#: tokens thinking and emitted 590 characters. Bounded so a pathological input
+#: cannot bill indefinitely.
+_BUDGET_GROWTH = 1.6
+_BUDGET_CEILING = 40_000
+
+
 def _mmss(seconds: float) -> str:
     return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
 
@@ -138,7 +155,7 @@ class DeepSeek:
         # 107 characters of a JSON object, reported by the parser as
         # "unterminated string", which points nowhere near the real cause.
         if content and choice.get("finish_reason") == "length":
-            raise StageError(
+            raise _Truncated(
                 f"completion truncated at max_tokens={max_tokens} "
                 f"(reasoning_tokens={detail_all.get('reasoning_tokens')}, "
                 f"completion_tokens={usage_all.get('completion_tokens')}, "
@@ -541,6 +558,18 @@ def summarize(
         try:
             payload = loads_lenient(engine.complete(system, body, max_tokens))
             break
+        except _Truncated:
+            # Retrying the same request cannot help; a bigger budget can.
+            # Reasoning cost scales with how dense the material is, so no fixed
+            # max_tokens survives every video — one 37-minute options show spent
+            # 15,795 of 16,000 tokens thinking and emitted 590 characters.
+            grown = min(int(max_tokens * _BUDGET_GROWTH), _BUDGET_CEILING)
+            if attempt == 3 or grown <= max_tokens:
+                raise
+            if log:
+                log.warning("summarize.truncated", attempt=attempt,
+                            was=max_tokens, now=grown)
+            max_tokens = grown
         except StageError:
             if attempt == 3:
                 raise
