@@ -78,6 +78,12 @@ map_reduce_threshold_tokens = 40000
 chunk_tokens                = 20000
 
 [publish]
+# Only notify about videos published within this many days. A digest is a
+# notification, and one about last December's episode is noise — backfilling a
+# back catalogue puts hundreds of old videos through the same pipeline as
+# today's upload. Markdown is always written; only the Telegram message is
+# suppressed. 0 disables the check and notifies for everything.
+notify_within_days = 3
 # Telegram credentials come from .env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 telegram = true
 # Post a digest even when nothing new was produced (so silence is unambiguous).

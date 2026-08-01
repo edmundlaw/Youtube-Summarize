@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import db as D
@@ -255,6 +256,32 @@ def stage_summarize(cfg: Config, conn, video: dict) -> Path:
     return out
 
 
+def _is_newsworthy(cfg: Config, video: dict) -> bool:
+    """Whether this video is recent enough to notify about.
+
+    A digest is a notification, and a notification about something published
+    last December is noise. Backfilling a channel's back catalogue queues
+    hundreds of videos through the same pipeline as today's upload, and without
+    this every one of them would arrive as a separate Telegram message.
+
+    The markdown is always written — only the notification is suppressed — so
+    nothing is lost, it simply does not interrupt.
+    """
+    days = int(cfg.get("publish", "notify_within_days", 3))
+    if days <= 0:
+        return True
+    published = video.get("published_at")
+    if not published:
+        return True                       # unknown age: treat as current
+    try:
+        when = datetime.fromisoformat(published)
+    except ValueError:
+        return True
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - when).days <= days
+
+
 def stage_publish(cfg: Config, conn, video: dict) -> Path:
     from .publish import render_markdown, render_telegram, send_telegram, write_markdown
     from .validator import Check
@@ -283,7 +310,7 @@ def stage_publish(cfg: Config, conn, video: dict) -> Path:
     )
     path = write_markdown(cfg.out_dir, view, markdown)
 
-    if cfg.get("publish", "telegram", False):
+    if cfg.get("publish", "telegram", False) and _is_newsworthy(cfg, video):
         send_telegram(cfg, render_telegram(view, data["payload"], checks, data["state"]))
 
     from .summarize import hosts_from_title

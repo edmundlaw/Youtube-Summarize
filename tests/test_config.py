@@ -104,3 +104,44 @@ def test_upload_listing_never_invents_a_publish_date():
     assert [r.id for r in refs] == ["abc", "def"]        # entry without id dropped
     assert all(r.published_at is None for r in refs)
     assert [r.title for r in refs] == ["A show", "Another"]
+
+
+# --- backfill must not flood the channel ------------------------------------
+
+def test_old_videos_do_not_trigger_a_notification():
+    """Backfilling a back catalogue queues hundreds of videos through the same
+    pipeline as today's upload. Without this, each one arrives as its own
+    Telegram message -- 320 of them for the queue measured on this corpus."""
+    import pathlib
+    from datetime import UTC, datetime, timedelta
+
+    from ytdigest.config import load_config
+    from ytdigest.runner import _is_newsworthy
+
+    cfg = load_config(pathlib.Path("."))
+    now = datetime.now(UTC)
+    fresh = {"published_at": (now - timedelta(hours=6)).isoformat()}
+    old = {"published_at": (now - timedelta(days=200)).isoformat()}
+    assert _is_newsworthy(cfg, fresh) is True
+    assert _is_newsworthy(cfg, old) is False
+
+
+def test_unknown_or_unparseable_age_is_treated_as_current():
+    """Silence is the wrong default for an unknown date: a real new upload must
+    never be dropped because its timestamp could not be read."""
+    import pathlib
+
+    from ytdigest.config import load_config
+    from ytdigest.runner import _is_newsworthy
+
+    cfg = load_config(pathlib.Path("."))
+    assert _is_newsworthy(cfg, {"published_at": None}) is True
+    assert _is_newsworthy(cfg, {"published_at": "not a date"}) is True
+    assert _is_newsworthy(cfg, {}) is True
+
+
+def test_notify_window_is_configured():
+    import pathlib
+    import tomllib
+    d = tomllib.loads(pathlib.Path("config/config.toml").read_text())
+    assert "notify_within_days" in d["publish"]
