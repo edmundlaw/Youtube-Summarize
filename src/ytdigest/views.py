@@ -339,11 +339,38 @@ def _offset(ts) -> float:
 # --- storage ---------------------------------------------------------------
 
 
+#: A view's timestamp comes from the model reading a `[MM:SS]` line prefix, and
+#: `_mmss` truncates — so it lands slightly *before* the segment it came from.
+#: Measured across every view on the identified videos: +0.04s to +0.96s, never
+#: negative, never above one second. 1.5s absorbs that without reaching a
+#: neighbouring turn.
+_TS_TOLERANCE_S = 1.5
+
+
 def _voice_speaker(conn, video_id: str, start_s: float) -> str | None:
-    """Enrolled speaker covering this timestamp, per stored identification."""
+    """Enrolled speaker for the segment this view was stated in.
+
+    Matching on `start_s <= t AND end_s >= t` alone is wrong twice over. The
+    truncated timestamp sits just before its own segment's start, so the exact
+    segment never matches; and because rolling captions overlap, `t` often
+    falls inside the *previous* segment instead — which attributes the call to
+    whoever spoke before. Snapping to the nearest segment start fixes both.
+
+    A nearest segment that was refused returns None. Reaching past it for the
+    last segment that happens to carry a name is precisely how the wrong person
+    gets credited, so the refusal stands.
+    """
+    row = conn.execute(
+        "SELECT speaker FROM segment_speakers "
+        "WHERE video_id = ? AND ABS(start_s - ?) <= ? "
+        "ORDER BY ABS(start_s - ?) LIMIT 1",
+        (video_id, start_s, _TS_TOLERANCE_S, start_s),
+    ).fetchone()
+    if row is not None:
+        return row["speaker"]
     row = conn.execute(
         "SELECT speaker FROM segment_speakers WHERE video_id = ? AND start_s <= ? "
-        "AND end_s >= ? AND speaker IS NOT NULL ORDER BY start_s DESC LIMIT 1",
+        "AND end_s >= ? ORDER BY start_s DESC LIMIT 1",
         (video_id, start_s, start_s),
     ).fetchone()
     return row["speaker"] if row else None

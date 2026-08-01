@@ -319,3 +319,47 @@ def test_sweep_spares_the_file_currently_being_worked_on(tmp_path):
     voice.sweep_orphan_audio(tmp_path, keep="busy")
     assert (tmp_path / "busy.wav").exists()
     assert not (tmp_path / "stale.wav").exists()
+
+
+# --- matching a view's timestamp to the segment it was spoken in ------------
+
+def _seg(conn, start, end, speaker):
+    conn.execute(
+        "INSERT INTO segment_speakers (video_id,start_s,end_s,speaker,score,margin,"
+        "model,created_at) VALUES ('v1',?,?,?,0.8,0.2,?,?)",
+        (start, end, speaker, voice.MODEL, D.now_iso()))
+
+
+def test_truncated_timestamp_still_finds_its_own_segment(conn):
+    """Views carry `[MM:SS]` read off a line prefix, and _mmss truncates, so the
+    timestamp lands up to a second BEFORE its segment starts. Measured on real
+    data: +0.04s to +0.96s. An exact-containment match finds nothing."""
+    from ytdigest.views import _voice_speaker
+    _seg(conn, 1125.36, 1138.0, "Eugene")
+    assert _voice_speaker(conn, "v1", 1125.0) == "Eugene"
+
+
+def test_it_does_not_reach_back_into_the_overlapping_previous_turn(conn):
+    """Rolling captions overlap, so a truncated timestamp often falls inside
+    the PREVIOUS segment. Taking that one credits the call to whoever spoke
+    before -- the exact misattribution this module exists to prevent."""
+    from ytdigest.views import _voice_speaker
+    _seg(conn, 1110.0, 1126.0, "羅家聰 (KC)")      # previous turn, still overlapping
+    _seg(conn, 1125.36, 1138.0, "Eugene")         # the turn actually cited
+    assert _voice_speaker(conn, "v1", 1125.0) == "Eugene"
+
+
+def test_a_refused_segment_stays_refused(conn):
+    """If the nearest segment could not be identified, that is the answer.
+    Reaching past it for the last segment carrying a name is how cross-talk
+    gets attributed to a specific person."""
+    from ytdigest.views import _voice_speaker
+    _seg(conn, 1110.0, 1126.0, "羅家聰 (KC)")
+    _seg(conn, 1125.36, 1138.0, None)             # cross-talk, refused
+    assert _voice_speaker(conn, "v1", 1125.0) is None
+
+
+def test_a_timestamp_far_from_any_segment_is_unattributed(conn):
+    from ytdigest.views import _voice_speaker
+    _seg(conn, 10.0, 20.0, "羅家聰 (KC)")
+    assert _voice_speaker(conn, "v1", 9000.0) is None
