@@ -775,12 +775,40 @@ def doctor() -> None:
     for module, extra in (
         ("structlog", ""), ("httpx", ""), ("yaml", ""), ("click", ""),
         ("opencc", ""), ("mlx", " (extra: asr)"), ("numpy", " (extra: asr)"),
+        ("torch", " (extra: voice)"), ("speechbrain", " (extra: voice)"),
     ):
         try:
             __import__(module)
             check(module + extra, True)
         except ImportError:
             check(module + extra, False, "not installed")
+
+    click.echo("speaker identification")
+    if cfg.get("voice", "enabled", True):
+        from .voice import DEFAULT_MARGIN, DEFAULT_THRESHOLD, voiceprints
+        prints = voiceprints(conn)
+        # No voiceprints is not an error -- the pipeline degrades to attributing
+        # nobody, which is safe. But it silently means no track record can be
+        # built, so say it plainly rather than reporting a clean bill of health.
+        check(f"voiceprints enrolled: {len(prints)}", bool(prints),
+              "" if prints else "none — every view will be unattributed")
+        for name in sorted(prints):
+            row = conn.execute("SELECT total_s FROM voiceprints WHERE speaker=?",
+                               (name,)).fetchone()
+            check(f"  {name}", True, f"{row['total_s'] / 60:.0f} min of voice")
+        # A config that disagrees with the calibrated default would attribute at
+        # an uncalibrated threshold, which is worse than not attributing at all.
+        drift = (float(cfg.get("voice", "threshold", DEFAULT_THRESHOLD)) != DEFAULT_THRESHOLD
+                 or float(cfg.get("voice", "margin", DEFAULT_MARGIN)) != DEFAULT_MARGIN)
+        check("thresholds match calibration", not drift,
+              "" if not drift else "config.toml differs from voice.py defaults")
+        stale = conn.execute(
+            "SELECT COUNT(*) FROM voiceprints WHERE model != ?",
+            (__import__("ytdigest.voice", fromlist=["MODEL"]).MODEL,)).fetchone()[0]
+        check("voiceprints match current model", stale == 0,
+              "" if not stale else f"{stale} built with a different model — re-enrol")
+    else:
+        check("disabled in config.toml", True, "no speaker attribution")
 
     click.echo("storage")
     usage = shutil.disk_usage(cfg.data_dir)

@@ -54,6 +54,8 @@ margin    = 0.08
 # Audio is downloaded per video, embedded, and deleted. It is ~570 MB for a
 # 2.5-hour show against ~36 KB of transcript, and is useless once embedded.
 keep_audio = false
+
+[summarize]
 provider       = "deepseek"
 model          = "deepseek-v4-flash"
 escalate_model = "deepseek-v4-pro"   # used for the validator retry pass
@@ -62,8 +64,11 @@ base_url       = "https://api.deepseek.com"
 # what gets recorded in each summary's frontmatter lineage.
 prompt_version = "v2"
 # Reasoning tokens count against this budget on deepseek-v4-*; a value sized
-# only for the answer returns an empty completion.
-max_tokens     = 12000
+# only for the answer returns an empty completion. Raised from 12000 after the
+# v3 prompt (voice labels, reported-speech and hedge rules) returned
+# finish_reason=length with no content — the extra rules cost reasoning, not
+# output, and the failure mode is a silent empty completion three retries deep.
+max_tokens     = 16000
 # Above this many estimated TOKENS (not characters), use map-reduce.
 # A 2.5-hour Cantonese show is ~43k tokens, so it splits into 3 chunks.
 map_reduce_threshold_tokens = 40000
