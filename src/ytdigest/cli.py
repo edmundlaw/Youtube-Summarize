@@ -960,6 +960,14 @@ def doctor() -> None:
 
     click.echo("speaker identification")
     if cfg.get("voice", "enabled", True):
+        from .sources.youtube import ffmpeg_dir
+        # Audio extraction needs ffmpeg, and launchd's PATH does not include
+        # Homebrew. Without this check the only symptom is that every scheduled
+        # video comes back with no speaker, which looks like the voiceprints
+        # being wrong rather than a missing binary.
+        location = ffmpeg_dir()
+        check("ffmpeg for audio extraction", location is not None,
+              location or "not found — voice ID cannot run")
         from .voice import DEFAULT_MARGIN, DEFAULT_THRESHOLD, voiceprints
         prints = voiceprints(conn)
         # No voiceprints is not an error -- the pipeline degrades to attributing

@@ -145,3 +145,33 @@ def test_notify_window_is_configured():
     import tomllib
     d = tomllib.loads(pathlib.Path("config/config.toml").read_text())
     assert "notify_within_days" in d["publish"]
+
+
+def test_ffmpeg_is_located_without_relying_on_PATH():
+    """launchd runs with a minimal PATH that excludes Homebrew, so relying on
+    PATH means audio extraction works by hand and fails under the scheduler.
+    It did: every scheduled run logged "ffprobe and ffmpeg not found" and
+    silently produced no speaker attribution."""
+    import shutil
+
+    from ytdigest.sources import youtube
+
+    original = shutil.which
+    shutil.which = lambda name: None          # simulate the launchd PATH
+    try:
+        location = youtube.ffmpeg_dir()
+    finally:
+        shutil.which = original
+    assert location in youtube._FFMPEG_DIRS or location is None
+    # On this machine ffmpeg is installed, so the fallback must find it.
+    import pathlib
+    if any((pathlib.Path(d) / "ffmpeg").exists() for d in youtube._FFMPEG_DIRS):
+        assert location is not None, "installed ffmpeg not found without PATH"
+
+
+def test_ydl_passes_ffmpeg_location_when_known():
+    from ytdigest.sources import youtube
+    if youtube.ffmpeg_dir() is None:
+        return
+    ydl = youtube._ydl()
+    assert ydl.params.get("ffmpeg_location") == youtube.ffmpeg_dir()

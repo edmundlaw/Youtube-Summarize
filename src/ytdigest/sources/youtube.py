@@ -39,6 +39,27 @@ def _classify(exc: Exception) -> str:
     return PERMANENT if any(s in text for s in _PERMANENT_SIGNS) else RETRYABLE
 
 
+#: Where Homebrew puts ffmpeg on Apple Silicon and Intel. launchd runs with a
+#: minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that contains neither, so
+#: relying on PATH means audio extraction works when run by hand and fails under
+#: the scheduler. It did: every scheduled run logged "ffprobe and ffmpeg not
+#: found" and silently produced no speaker attribution at all.
+_FFMPEG_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+
+
+def ffmpeg_dir() -> str | None:
+    """Directory holding ffmpeg, or None. Resolved at call time, not import."""
+    import shutil
+
+    found = shutil.which("ffmpeg")
+    if found:
+        return str(Path(found).parent)
+    for candidate in _FFMPEG_DIRS:
+        if (Path(candidate) / "ffmpeg").exists():
+            return candidate
+    return None
+
+
 def _ydl(**overrides):
     from yt_dlp import YoutubeDL
 
@@ -49,6 +70,9 @@ def _ydl(**overrides):
         "skip_download": True,
         "extract_flat": False,
     }
+    location = ffmpeg_dir()
+    if location:
+        options["ffmpeg_location"] = location
     options.update(overrides)
     return YoutubeDL(options)
 
