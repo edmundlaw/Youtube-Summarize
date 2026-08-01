@@ -31,6 +31,14 @@ from .validator import (
 PROMPT_VERSION = "v3"
 
 
+class _EmptyCompletion(StageError):
+    """The model answered, but with no content.
+
+    Its own class so `complete()` can retry it in place. It is a StageError
+    subclass so that callers which do not care still handle it as one.
+    """
+
+
 def _mmss(seconds: float) -> str:
     return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
 
@@ -71,8 +79,16 @@ class DeepSeek:
                 last = exc
                 if attempt < attempts:
                     time.sleep(2 ** attempt)
+            except _EmptyCompletion as exc:
+                # A completion with no content is as non-deterministic as the
+                # malformed JSON already retried a layer up: the same request
+                # succeeds on the next attempt. Letting it through failed the
+                # stage on the first try and discarded everything.
+                last = exc
+                if attempt < attempts:
+                    time.sleep(2 ** attempt)
         raise StageError(
-            f"deepseek transport failed after {attempts} attempts: {last}", RETRYABLE
+            f"deepseek call failed after {attempts} attempts: {last}", RETRYABLE
         )
 
     def _once(self, system: str, user: str, max_tokens: int, timeout: float) -> str:
@@ -108,9 +124,24 @@ class DeepSeek:
         choice = payload["choices"][0]
         content = choice.get("message", {}).get("content") or ""
         if not content:
-            raise StageError(
-                f"empty completion (finish_reason={choice.get('finish_reason')}); "
-                "raise summarize.max_tokens — reasoning tokens count against it",
+            # Report what actually happened rather than always blaming the
+            # budget. deepseek-v4 returns reasoning in a separate field and
+            # counts it against max_tokens, so an empty answer has two quite
+            # different causes and only one of them is fixed by raising it:
+            #   finish_reason=length -> reasoning consumed the budget
+            #   finish_reason=stop   -> the model simply returned nothing,
+            #                           which is transient and worth retrying
+            usage = payload.get("usage") or {}
+            details = usage.get("completion_tokens_details") or {}
+            reason = choice.get("finish_reason")
+            advice = ("raise summarize.max_tokens — reasoning tokens count "
+                      "against it" if reason == "length"
+                      else "model returned no content; transient")
+            raise _EmptyCompletion(
+                f"empty completion (finish_reason={reason}, "
+                f"completion_tokens={usage.get('completion_tokens')}, "
+                f"reasoning_tokens={details.get('reasoning_tokens')}, "
+                f"max_tokens={max_tokens}); {advice}",
                 RETRYABLE,
             )
         return content

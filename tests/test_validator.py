@@ -399,3 +399,59 @@ def test_a_failed_retry_keeps_the_generation_already_paid_for():
 
     assert state == PASSED_WITH_FLAGS
     assert payload["theses"][0]["thesis"] == "恒指上望三萬九"   # the first payload survived
+
+
+def test_empty_completion_is_retried_in_place():
+    """deepseek-v4 sometimes answers with no content at all. Observed with
+    finish_reason=stop, which is not a budget problem — the same request
+    succeeds next attempt. It used to fail the stage on the first occurrence."""
+    from ytdigest.config import load_config
+    from ytdigest.summarize import DeepSeek, _EmptyCompletion
+
+    engine = DeepSeek.__new__(DeepSeek)
+    engine.cfg = load_config()
+    engine.id, engine.base_url, engine._key = "stub", "https://example.invalid", "x"
+
+    calls = {"n": 0}
+
+    def flaky(system, user, max_tokens, timeout):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise _EmptyCompletion("empty completion (finish_reason=stop)", "retryable")
+        return '{"ok": true}'
+
+    engine._once = flaky
+    assert engine.complete("s", "u", 10, timeout=1) == '{"ok": true}'
+    assert calls["n"] == 2
+
+
+def test_empty_completion_message_distinguishes_its_two_causes():
+    """Always advising 'raise max_tokens' is wrong half the time and sends the
+    next reader down the wrong path."""
+    import httpx
+
+    from ytdigest.config import load_config
+    from ytdigest.summarize import DeepSeek, _EmptyCompletion
+
+    engine = DeepSeek.__new__(DeepSeek)
+    engine.cfg = load_config()
+    engine.id, engine.base_url, engine._key = "stub", "https://api.example", "x"
+
+    def respond(reason):
+        body = {"choices": [{"finish_reason": reason, "message": {"content": ""}}],
+                "usage": {"completion_tokens": 999,
+                          "completion_tokens_details": {"reasoning_tokens": 998}}}
+        return httpx.Response(200, json=body,
+                              request=httpx.Request("POST", "https://api.example"))
+
+    for reason, expect in (("length", "raise summarize.max_tokens"),
+                           ("stop", "transient")):
+        original = httpx.post
+        httpx.post = lambda *a, **k: respond(reason)          # noqa: E731
+        try:
+            engine._once("s", "u", 100, 5)
+        except _EmptyCompletion as exc:
+            assert expect in str(exc), (reason, str(exc))
+            assert "reasoning_tokens=998" in str(exc)
+        finally:
+            httpx.post = original
