@@ -64,11 +64,16 @@ base_url       = "https://api.deepseek.com"
 # what gets recorded in each summary's frontmatter lineage.
 prompt_version = "v2"
 # Reasoning tokens count against this budget on deepseek-v4-*; a value sized
-# only for the answer returns an empty completion. Raised from 12000 after the
-# v3 prompt (voice labels, reported-speech and hedge rules) returned
-# finish_reason=length with no content — the extra rules cost reasoning, not
-# output, and the failure mode is a silent empty completion three retries deep.
-max_tokens     = 16000
+# only for the answer returns an empty completion.
+#
+# Do not raise this on the strength of an "empty completion" alone. It was
+# briefly taken to 16000 after one, and that made things worse: the empty
+# completion had finish_reason=stop (the model returning nothing, transient),
+# not length, and the larger budget produced a longer non-streaming request
+# that DeepSeek then cut mid-response on every attempt. 12000 is the value
+# that summarised 35 videos without incident. Raise it only for a genuine
+# finish_reason=length, which the error message now distinguishes.
+max_tokens     = 12000
 # Above this many estimated TOKENS (not characters), use map-reduce.
 # A 2.5-hour Cantonese show is ~43k tokens, so it splits into 3 chunks.
 map_reduce_threshold_tokens = 40000

@@ -363,3 +363,47 @@ def test_a_timestamp_far_from_any_segment_is_unattributed(conn):
     from ytdigest.views import _voice_speaker
     _seg(conn, 10.0, 20.0, "羅家聰 (KC)")
     assert _voice_speaker(conn, "v1", 9000.0) is None
+
+
+# --- the prompt actually receives the labels --------------------------------
+
+def test_labels_reach_the_rendered_transcript(conn):
+    """Verified by hand once; pinned here because a key-type or rounding change
+    would silently render every line as 主持 and the feature would do nothing
+    while appearing to work."""
+    from ytdigest.interfaces import Segment
+    from ytdigest.summarize import _transcript_text, speaker_map
+
+    _seg(conn, 1125.36, 1138.0, "羅家聰 (KC)")
+    _seg(conn, 1140.0, 1150.0, None)
+    segs = [Segment(id=0, start=1125.36, end=1138.0, text="A", lang="yue",
+                    confidence=None, flags=[]),
+            Segment(id=1, start=1140.0, end=1150.0, text="B", lang="yue",
+                    confidence=None, flags=[])]
+    text = _transcript_text(segs, speaker_map(conn, "v1"))
+    assert "羅家聰 (KC)：A" in text
+    assert "主持：B" in text
+
+
+def test_no_identification_renders_without_any_speaker_prefix(conn):
+    """None and an empty map mean different things: identification never ran
+    versus it ran and refused. The first must not imply the second."""
+    from ytdigest.interfaces import Segment
+    from ytdigest.summarize import _transcript_text, speaker_map
+
+    assert speaker_map(conn, "v1") is None
+    segs = [Segment(id=0, start=0.0, end=5.0, text="A", lang="yue",
+                    confidence=None, flags=[])]
+    assert "主持" not in _transcript_text(segs, None)
+
+
+def test_identified_but_all_refused_still_marks_every_line_unknown(conn):
+    from ytdigest.interfaces import Segment
+    from ytdigest.summarize import _transcript_text, speaker_map
+
+    _seg(conn, 0.0, 5.0, None)
+    m = speaker_map(conn, "v1")
+    assert m == {}                       # ran, attributed nobody
+    segs = [Segment(id=0, start=0.0, end=5.0, text="A", lang="yue",
+                    confidence=None, flags=[])]
+    assert "主持：A" in _transcript_text(segs, m)
