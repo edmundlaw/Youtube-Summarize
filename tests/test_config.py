@@ -68,3 +68,39 @@ def test_voice_threshold_matches_the_calibrated_default(config):
     from ytdigest import voice
     assert config["voice"]["threshold"] == pytest.approx(voice.DEFAULT_THRESHOLD)
     assert config["voice"]["margin"] == pytest.approx(voice.DEFAULT_MARGIN)
+
+
+# --- backfill listing -------------------------------------------------------
+
+def test_upload_listing_never_invents_a_publish_date():
+    """A flat upload listing carries no date -- only id and title, every other
+    field null. Defaulting to "now" was tried and is actively dangerous: every
+    view's stated_at derives from published_at, so a backfilled opinion would be
+    dated to its import day and graded against the wrong price window."""
+    from ytdigest.sources import youtube
+
+    class FakeYDL:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"entries": [
+                {"id": "abc", "title": "A show", "upload_date": None,
+                 "duration": None, "timestamp": None},
+                {"id": "def", "title": "Another"},
+                {"title": "no id at all"},
+            ]}
+
+    original = youtube._ydl
+    youtube._ydl = lambda **kw: FakeYDL()
+    try:
+        refs = youtube.list_uploads("UC123")
+    finally:
+        youtube._ydl = original
+
+    assert [r.id for r in refs] == ["abc", "def"]        # entry without id dropped
+    assert all(r.published_at is None for r in refs)
+    assert [r.title for r in refs] == ["A show", "Another"]

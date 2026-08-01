@@ -55,7 +55,10 @@ class VideoRef:
     id: str
     channel_id: str
     title: str
-    published_at: str
+    #: None when the source could not supply one — a flat upload listing gives
+    #: no date. It must be filled by probing before the video is stored, because
+    #: every view's `stated_at` derives from it.
+    published_at: str | None
     duration_s: int | None = None
 
 

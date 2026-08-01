@@ -98,6 +98,51 @@ def discover(channel_id: str, backfill_days: int = 7) -> list[VideoRef]:
     return refs
 
 
+def list_uploads(channel_id: str, limit: int = 500,
+                 since: str | None = None) -> list[VideoRef]:
+    """Every upload on a channel, newest first — not just the RSS window.
+
+    RSS carries roughly the last fifteen uploads, which is about a fortnight for
+    a daily show. That is enough to keep up and nowhere near enough to build a
+    record of what someone has said, so history has to come from the uploads
+    playlist instead.
+
+    Listed flat: yt-dlp returns one entry per video without opening any of them,
+    so eighty uploads cost about a second and no downloads.
+
+    **A flat listing carries no date and no duration** — only id and title, with
+    every other field null. `published_at` therefore comes back None, and the
+    caller must probe the videos it actually wants. Defaulting the date to "now"
+    was tried and is actively dangerous: `stated_at` is derived from it, so
+    every backfilled opinion would be dated to the day it was imported and
+    graded against the wrong price window entirely.
+
+    `since` is accepted but can only be applied by the caller, after probing.
+    """
+    options = {
+        "extract_flat": "in_playlist",
+        "playlistend": limit,
+        "skip_download": True,
+    }
+    url = f"https://www.youtube.com/channel/{channel_id}/videos"
+    try:
+        with _ydl(**options) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        raise StageError(f"upload listing failed: {exc}", _classify(exc)) from exc
+
+    refs: list[VideoRef] = []
+    for entry in (info or {}).get("entries") or []:
+        vid = entry.get("id")
+        if not vid:
+            continue
+        refs.append(VideoRef(
+            id=vid, channel_id=channel_id, title=entry.get("title") or "",
+            published_at=None,
+        ))
+    return refs
+
+
 def probe(video_id: str) -> dict:
     """Metadata for one video, without downloading anything."""
     try:

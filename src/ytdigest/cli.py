@@ -507,6 +507,108 @@ def scorecard_cmd(resolve: bool, min_graded: int) -> None:
     click.echo("       instrument. Not a failure of the speaker.")
 
 
+@main.command("backfill")
+@click.option("--channel", "channel_ids", multiple=True,
+              help="Channel id. Default: every enabled channel.")
+@click.option("--limit", default=300, help="Uploads to list per channel.")
+@click.option("--since", default=None, help="ISO date; skip anything older.")
+@click.option("--dry-run", is_flag=True, help="Show what would be queued.")
+def backfill_cmd(channel_ids, limit, since, dry_run) -> None:
+    """Queue a channel's back catalogue for summarising.
+
+    Discovery only. Nothing is fetched or summarised here — videos land with
+    status 'new' and the next `run` works through them, so the cost of a large
+    backfill is visible and interruptible rather than incurred by this command.
+
+    Videos are filtered on title first, because a flat upload listing carries
+    only id and title. Only the survivors are probed for date and duration,
+    which keeps a 300-video listing down to a handful of probes.
+    """
+    import re as _re
+
+    from .sources.youtube import list_uploads, probe
+
+    cfg, conn = _open()
+    rows = list(conn.execute(
+        "SELECT * FROM channels WHERE enabled = 1" if not channel_ids
+        else f"SELECT * FROM channels WHERE id IN ({','.join('?' * len(channel_ids))})",
+        () if not channel_ids else channel_ids))
+    if not rows:
+        click.echo("no matching channels"); return
+
+    queued = skipped = known = failed = 0
+    for channel in rows:
+        click.echo(f"\n{channel['title']}")
+        try:
+            uploads = list_uploads(channel["id"], limit=limit)
+        except Exception as exc:                     # noqa: BLE001
+            click.echo(f"  listing failed: {str(exc)[:120]}"); failed += 1; continue
+        click.echo(f"  {len(uploads)} uploads listed")
+
+        include = _re.compile(channel["title_include"]) if channel["title_include"] else None
+        exclude = _re.compile(channel["title_exclude"]) if channel["title_exclude"] else None
+        candidates = []
+        for ref in uploads:
+            if conn.execute("SELECT 1 FROM videos WHERE id = ?", (ref.id,)).fetchone():
+                known += 1
+                continue
+            if include and not include.search(ref.title):
+                skipped += 1
+                continue
+            if exclude and exclude.search(ref.title):
+                skipped += 1
+                continue
+            candidates.append(ref)
+        click.echo(f"  {len(candidates)} new and matching the title filter")
+
+        for ref in candidates:
+            try:
+                info = probe(ref.id)
+            except Exception as exc:                 # noqa: BLE001
+                click.echo(f"    {ref.id}: probe failed, {str(exc)[:80]}")
+                failed += 1
+                continue
+            duration = info.get("duration")
+            published = info.get("upload_date")
+            published = (f"{published[:4]}-{published[4:6]}-{published[6:8]}"
+                         "T00:00:00+00:00") if published else None
+            if published is None:
+                # Without a real date every view on this video would be stamped
+                # with the import date and graded against the wrong window.
+                click.echo(f"    {ref.id}: no upload date, skipped")
+                skipped += 1
+                continue
+            if since and published[:10] < since:
+                skipped += 1
+                continue
+            if duration is not None and (
+                duration < (channel["min_duration_s"] or 0)
+                or duration > (channel["max_duration_s"] or 10**9)
+            ):
+                skipped += 1
+                continue
+            if dry_run:
+                click.echo(f"    would queue {published[:10]}  {ref.title[:56]}")
+                queued += 1
+                continue
+            with D.transaction(conn):
+                conn.execute(
+                    "INSERT OR IGNORE INTO videos (id, channel_id, title, "
+                    " published_at, discovered_at, status, duration_s) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (ref.id, channel["id"], ref.title, published, D.now_iso(),
+                     D.NEW, duration),
+                )
+            queued += 1
+
+    verb = "would queue" if dry_run else "queued"
+    click.echo(f"\n{verb} {queued}; {known} already known, {skipped} filtered out, "
+               f"{failed} failed")
+    if queued and not dry_run:
+        click.echo("run `ytdigest run` to summarise them "
+                   "(they are queued, not yet processed).")
+
+
 @main.command("resummarize")
 @click.argument("video_ids", nargs=-1)
 @click.option("--identified", is_flag=True,
