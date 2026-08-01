@@ -119,6 +119,45 @@ voiceprint per host, then match each caption segment against it.
   16 kHz mono 16-bit PCM, and torchaudio moved its top-level `load`/`info` out
   from under us at 2.13.
 
+## DeepSeek transport: stream, and read finish_reason
+
+All of this was found by running real videos, not by tests. The unit tests
+stub the API and could not see any of it.
+
+- **Requests must stream.** Buffered, a summarise call spends minutes with no
+  bytes on the socket while the model reasons, and DeepSeek cuts it: *"peer
+  closed connection without sending complete message body"* on all three
+  attempts. Streaming removes it. `usage` arrives in a final frame carrying no
+  `choices`, so accumulate `finish_reason` and `usage` separately rather than
+  reading the last chunk.
+- **Reasoning tokens dominate `max_tokens`.** A trivial 7-character answer
+  measured 221 reasoning tokens of 227. A budget sized for the answer returns a
+  fragment. One 37-minute options show spent 15,795 of 16,000 thinking and
+  emitted 590 characters, so no fixed value survives every video —
+  `_Truncated` grows it 1.6x per attempt to a 40k ceiling.
+- **`finish_reason` decides the remedy, not whether content survived.** Reason
+  `length` is a truncation whether a fragment escaped or nothing did; both need
+  a bigger budget. Only an empty completion with `stop` is transient and worth
+  an identical retry. Splitting those two apart meant the budget escalation
+  never fired on the video it was written for.
+- **Never conclude "raise max_tokens" from an empty completion alone.** Doing
+  so once took the budget to 16000, which made things worse: the longer
+  generation was the one being cut. Check `finish_reason` first.
+- A truncated body reaches the JSON parser as *"unterminated string"*, which
+  points nowhere near the cause. Truncation is raised where it happens.
+
+## Regenerating summaries
+
+`ytdigest resummarize [ids] [--identified] [--stale-prompt]` re-runs generation
+only; `retry` re-runs every stage including fetch. Telegram is off by default —
+correcting months of stored summaries must not replay months of digests.
+
+**Views are replaced per video, not merged.** A regenerated summary supersedes
+the one before it, but the dedupe key includes `speaker`, so the moment
+attribution changes — a guessed name becoming refused, which is the entire
+point of voice identification — the old row survives beside the new one and the
+scorecard counts both. Observed as 49 stale rows across 5 regenerated videos.
+
 ## Long videos get a thinner summary — prefer the parts
 
 Measured on the same episode of 錢錢錢打到嚟, which the channel posts both as
