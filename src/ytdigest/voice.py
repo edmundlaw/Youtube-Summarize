@@ -397,6 +397,36 @@ def speaker_at(conn, video_id: str, start_s: float) -> str | None:
 
 # --- audio lifecycle --------------------------------------------------------
 
+#: Extensions yt-dlp and ffmpeg leave in the audio directory.
+_AUDIO_SUFFIXES = {".wav", ".m4a", ".webm", ".opus", ".mp3", ".part", ".ytdl"}
+
+
+def sweep_orphan_audio(dest_dir: Path, keep: str | None = None) -> int:
+    """Delete audio left behind by a killed run. Returns bytes reclaimed.
+
+    `audio_for` cleans up in a `finally`, which covers exceptions but not
+    SIGKILL -- and a killed identification leaves a ~130 MB wav sitting there
+    with nothing that would ever remove it. Sweeping on entry means the disk
+    recovers by itself on the next run instead of accumulating one file per
+    crash.
+    """
+    reclaimed = 0
+    if not dest_dir.exists():
+        return 0
+    for leftover in dest_dir.iterdir():
+        if leftover.suffix.lower() not in _AUDIO_SUFFIXES:
+            continue
+        if keep and leftover.stem == keep:
+            continue
+        try:
+            size = leftover.stat().st_size
+            leftover.unlink()
+            reclaimed += size
+        except OSError:
+            pass
+    return reclaimed
+
+
 @contextlib.contextmanager
 def audio_for(video_id: str, dest_dir: Path):
     """Download audio, hand it over, and always delete it.
@@ -408,13 +438,14 @@ def audio_for(video_id: str, dest_dir: Path):
     """
     from .sources.youtube import fetch_audio
 
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    sweep_orphan_audio(dest_dir, keep=video_id)     # clean up after any killed run
     path = None
     try:
         path = fetch_audio(video_id, dest_dir)
         yield path
     finally:
         for leftover in dest_dir.glob(f"{video_id}.*"):
-            if leftover.suffix.lower() in {".wav", ".m4a", ".webm", ".opus",
-                                           ".mp3", ".part", ".ytdl"}:
+            if leftover.suffix.lower() in _AUDIO_SUFFIXES:
                 with contextlib.suppress(OSError):
                     leftover.unlink()

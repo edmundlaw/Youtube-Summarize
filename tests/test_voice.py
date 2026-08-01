@@ -298,3 +298,24 @@ def test_purity_is_quiet_for_a_genuinely_solo_source(conn, monkeypatch):
     result = voice.enroll(conn, "solo", [pathlib.Path("a.wav")], "test")
     assert result["purity"] >= voice.MIN_PURITY
     assert voice.purity_warning(result) is None
+
+
+def test_orphan_audio_from_a_killed_run_is_swept(tmp_path):
+    """`finally` covers exceptions but not SIGKILL. Without a sweep, every
+    killed run leaves a ~130 MB wav that nothing would ever remove."""
+    _write_wav(tmp_path / "old1.wav")
+    _write_wav(tmp_path / "old2.wav")
+    (tmp_path / "notes.json").write_text("{}")          # not audio; must survive
+    reclaimed = voice.sweep_orphan_audio(tmp_path)
+    assert reclaimed > 0
+    assert not (tmp_path / "old1.wav").exists()
+    assert not (tmp_path / "old2.wav").exists()
+    assert (tmp_path / "notes.json").exists()
+
+
+def test_sweep_spares_the_file_currently_being_worked_on(tmp_path):
+    _write_wav(tmp_path / "busy.wav")
+    _write_wav(tmp_path / "stale.wav")
+    voice.sweep_orphan_audio(tmp_path, keep="busy")
+    assert (tmp_path / "busy.wav").exists()
+    assert not (tmp_path / "stale.wav").exists()
