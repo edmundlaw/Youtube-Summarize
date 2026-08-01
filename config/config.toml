@@ -63,17 +63,15 @@ base_url       = "https://api.deepseek.com"
 # Informational only — summarize.PROMPT_VERSION is authoritative and is
 # what gets recorded in each summary's frontmatter lineage.
 prompt_version = "v2"
-# Reasoning tokens count against this budget on deepseek-v4-*; a value sized
-# only for the answer returns an empty completion.
+# Reasoning tokens count against this budget on deepseek-v4-*, and they
+# dominate it: a trivial 7-character answer measured 221 reasoning tokens
+# against 227 total. A budget sized for the answer alone returns a fragment.
 #
-# Do not raise this on the strength of an "empty completion" alone. It was
-# briefly taken to 16000 after one, and that made things worse: the empty
-# completion had finish_reason=stop (the model returning nothing, transient),
-# not length, and the larger budget produced a longer non-streaming request
-# that DeepSeek then cut mid-response on every attempt. 12000 is the value
-# that summarised 35 videos without incident. Raise it only for a genuine
-# finish_reason=length, which the error message now distinguishes.
-max_tokens     = 12000
+# 12000 truncated the v3 prompt's output to 107 characters, which surfaced as
+# "unterminated string" from the JSON parser rather than as truncation. Raising
+# it was only safe once requests were streamed: buffered, the longer generation
+# sat silent on the socket and DeepSeek cut it on all three attempts.
+max_tokens     = 16000
 # Above this many estimated TOKENS (not characters), use map-reduce.
 # A 2.5-hour Cantonese show is ~43k tokens, so it splits into 3 chunks.
 map_reduce_threshold_tokens = 40000

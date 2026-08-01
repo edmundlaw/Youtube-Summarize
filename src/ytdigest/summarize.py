@@ -92,23 +92,29 @@ class DeepSeek:
         )
 
     def _once(self, system: str, user: str, max_tokens: int, timeout: float) -> str:
+        """One streamed call.
+
+        Streaming is not for progress reporting — it is what makes a long
+        generation survive at all. Buffered, a summarise request spends minutes
+        with no bytes crossing the socket while the model reasons, and DeepSeek
+        cuts it: "peer closed connection without sending complete message body"
+        on all three attempts. Streaming keeps the connection active, which
+        removes the failure and lets max_tokens be sized for the work rather
+        than for how long the wire will stay quiet.
+        """
+        body = {
+            "model": self.id,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "response_format": {"type": "json_object"},
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
         try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self._key}"},
-                json={
-                    "model": self.id,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "max_tokens": max_tokens,
-                },
-                timeout=timeout,
-            )
-            response.raise_for_status()
-            payload = response.json()
+            payload = self._stream(body, timeout)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             # 429 and 5xx are worth retrying; a 400 means our request is wrong.
@@ -123,6 +129,23 @@ class DeepSeek:
 
         choice = payload["choices"][0]
         content = choice.get("message", {}).get("content") or ""
+        usage_all = payload.get("usage") or {}
+        detail_all = usage_all.get("completion_tokens_details") or {}
+
+        # Truncation must be named, not left to surface as malformed JSON three
+        # frames away. Reasoning tokens count against max_tokens here, so a
+        # budget that mostly went on thinking returns a fragment -- observed as
+        # 107 characters of a JSON object, reported by the parser as
+        # "unterminated string", which points nowhere near the real cause.
+        if content and choice.get("finish_reason") == "length":
+            raise StageError(
+                f"completion truncated at max_tokens={max_tokens} "
+                f"(reasoning_tokens={detail_all.get('reasoning_tokens')}, "
+                f"completion_tokens={usage_all.get('completion_tokens')}, "
+                f"{len(content)} chars of content). Reasoning tokens count "
+                "against the budget — raise summarize.max_tokens.",
+                RETRYABLE,
+            )
         if not content:
             # Report what actually happened rather than always blaming the
             # budget. deepseek-v4 returns reasoning in a separate field and
@@ -145,6 +168,49 @@ class DeepSeek:
                 RETRYABLE,
             )
         return content
+
+    def _stream(self, body: dict, timeout: float) -> dict:
+        """Read an SSE completion and rebuild the non-streamed response shape.
+
+        Returned in the buffered layout so the caller keeps one code path for
+        both. `usage` arrives in a final frame carrying no choices, which is why
+        finish_reason and usage are accumulated separately rather than read off
+        the last chunk.
+        """
+        chunks: list[str] = []
+        finish_reason = None
+        usage: dict = {}
+        with httpx.stream(
+            "POST", f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self._key}"},
+            json=body, timeout=timeout,
+        ) as response:
+            if response.status_code >= 400:
+                response.read()               # body is needed for the message
+                response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    frame = json.loads(data)
+                except json.JSONDecodeError:
+                    continue                  # keep-alive or partial frame
+                if frame.get("usage"):
+                    usage = frame["usage"]
+                for choice in frame.get("choices") or []:
+                    piece = (choice.get("delta") or {}).get("content")
+                    if piece:
+                        chunks.append(piece)
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+        return {
+            "choices": [{"finish_reason": finish_reason,
+                         "message": {"content": "".join(chunks)}}],
+            "usage": usage,
+        }
 
 
 def hosts_from_title(title: str) -> list[str]:

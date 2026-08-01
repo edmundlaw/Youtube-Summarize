@@ -425,33 +425,107 @@ def test_empty_completion_is_retried_in_place():
     assert calls["n"] == 2
 
 
-def test_empty_completion_message_distinguishes_its_two_causes():
+def test_empty_completion_message_distinguishes_its_two_causes(monkeypatch):
     """Always advising 'raise max_tokens' is wrong half the time and sends the
     next reader down the wrong path."""
+    import contextlib
+
     import httpx
 
-    from ytdigest.config import load_config
-    from ytdigest.summarize import DeepSeek, _EmptyCompletion
-
-    engine = DeepSeek.__new__(DeepSeek)
-    engine.cfg = load_config()
-    engine.id, engine.base_url, engine._key = "stub", "https://api.example", "x"
-
-    def respond(reason):
-        body = {"choices": [{"finish_reason": reason, "message": {"content": ""}}],
-                "usage": {"completion_tokens": 999,
-                          "completion_tokens_details": {"reasoning_tokens": 998}}}
-        return httpx.Response(200, json=body,
-                              request=httpx.Request("POST", "https://api.example"))
+    from ytdigest.summarize import _EmptyCompletion
 
     for reason, expect in (("length", "raise summarize.max_tokens"),
                            ("stop", "transient")):
-        original = httpx.post
-        httpx.post = lambda *a, **k: respond(reason)          # noqa: E731
+        response = _sse(
+            {"choices": [{"delta": {}, "finish_reason": reason}]},
+            {"choices": [], "usage": {"completion_tokens": 999,
+                                      "completion_tokens_details":
+                                          {"reasoning_tokens": 998}}},
+        )
+        monkeypatch.setattr(httpx, "stream",
+                            lambda *a, **k: contextlib.nullcontext(response))
         try:
-            engine._once("s", "u", 100, 5)
+            _engine()._once("s", "u", 100, 5)
+            raise AssertionError("expected an empty completion")
         except _EmptyCompletion as exc:
             assert expect in str(exc), (reason, str(exc))
             assert "reasoning_tokens=998" in str(exc)
-        finally:
-            httpx.post = original
+
+
+# --- streamed transport -----------------------------------------------------
+
+def _engine():
+    import pathlib
+    from ytdigest.config import load_config
+    from ytdigest.summarize import DeepSeek
+    e = DeepSeek.__new__(DeepSeek)
+    e.cfg = load_config(pathlib.Path("."))
+    e.id, e.base_url, e._key = "stub", "https://api.example", "x"
+    return e
+
+
+def _sse(*frames):
+    import httpx
+    import json as J
+    lines = [f"data: {J.dumps(f)}" for f in frames] + ["data: [DONE]"]
+    return httpx.Response(200, text="\n".join(lines) + "\n",
+                          request=httpx.Request("POST", "https://api.example"))
+
+
+def test_stream_reassembles_content_and_carries_usage(monkeypatch):
+    """usage arrives in a final frame with no choices, so finish_reason and
+    usage must be accumulated separately rather than read off the last chunk."""
+    import contextlib
+
+    import httpx
+
+    response = _sse(
+        {"choices": [{"delta": {"content": '{"a"'}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": ":1}"}, "finish_reason": "stop"}]},
+        {"choices": [], "usage": {"completion_tokens": 9,
+                                  "completion_tokens_details": {"reasoning_tokens": 7}}},
+    )
+    monkeypatch.setattr(httpx, "stream",
+                        lambda *a, **k: contextlib.nullcontext(response))
+    out = _engine()._stream({"model": "stub"}, 10)
+    assert out["choices"][0]["message"]["content"] == '{"a":1}'
+    assert out["choices"][0]["finish_reason"] == "stop"
+    assert out["usage"]["completion_tokens_details"]["reasoning_tokens"] == 7
+
+
+def test_stream_ignores_keepalive_and_unparseable_frames(monkeypatch):
+    import contextlib
+
+    import httpx
+
+    response = httpx.Response(
+        200,
+        text='\n: keep-alive\n\ndata: {"choices":[{"delta":{"content":"ok"}}]}\n'
+             'data: not-json\ndata: [DONE]\n',
+        request=httpx.Request("POST", "https://api.example"))
+    monkeypatch.setattr(httpx, "stream",
+                        lambda *a, **k: contextlib.nullcontext(response))
+    assert _engine()._stream({}, 10)["choices"][0]["message"]["content"] == "ok"
+
+
+def test_truncated_completion_is_named_not_left_to_the_json_parser(monkeypatch):
+    """A budget spent on reasoning returns a fragment. Reported as
+    'unterminated string' it points nowhere near the cause -- observed as 107
+    characters of a JSON object after reasoning ate 12000 tokens."""
+    import contextlib
+
+    import httpx
+    import pytest as P
+
+    from ytdigest.db import StageError
+
+    response = _sse(
+        {"choices": [{"delta": {"content": '{"theses":[{"ts":"00:0'},
+                      "finish_reason": "length"}]},
+        {"choices": [], "usage": {"completion_tokens": 12000,
+                                  "completion_tokens_details": {"reasoning_tokens": 11978}}},
+    )
+    monkeypatch.setattr(httpx, "stream",
+                        lambda *a, **k: contextlib.nullcontext(response))
+    with P.raises(StageError, match="truncated at max_tokens"):
+        _engine()._once("s", "u", 12000, 10)
