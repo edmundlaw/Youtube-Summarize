@@ -462,9 +462,24 @@ def summarize(
         # protected glossary terms that flash preserves — so it was both more
         # fragile and lower quality on the one axis that matters here.
         retry_engine = engine
-        payload = loads_lenient(
-            retry_engine.complete(system, f"{body}\n\n---\n{instruction}", max_tokens)
-        )
+        # A failed retry must not cost us the generation we already have. The
+        # retry sends the whole transcript again plus the instruction, and that
+        # request is the largest this pipeline makes -- it has been observed
+        # dropping the connection on all three attempts. Losing the first
+        # payload there means paying for it, discarding it, and publishing
+        # nothing, when the first payload is exactly what we would publish if
+        # the retry ran and still left offenders.
+        try:
+            retried = loads_lenient(
+                retry_engine.complete(system, f"{body}\n\n---\n{instruction}",
+                                      max_tokens)
+            )
+        except StageError as exc:
+            if log:
+                log.warning("summarize.retry_failed", error=str(exc)[:200])
+            return payload, PASSED_WITH_FLAGS, checks
+
+        payload = retried
         checks = check_text(_flatten(payload), ledger)
         state = verdict(checks)
         # Still unverifiable after one retry: publish with the figures marked

@@ -354,3 +354,48 @@ def test_conditional_calls_are_not_flattened_to_immediate():
     assert views[0].stance == "bearish"
     assert views[1].entry_basis == "on_break"
     assert views[2].entry_basis == "unspecified"
+
+
+def test_a_failed_retry_keeps_the_generation_already_paid_for():
+    """The validator retry re-sends the whole transcript plus an instruction --
+    the largest request this pipeline makes, observed dropping the connection
+    on all three attempts. Raising there discards a first payload that was
+    already generated, already validated, and is exactly what would be
+    published had the retry run and still left offenders."""
+    import pathlib
+
+    from ytdigest.config import load_config
+    from ytdigest.db import StageError
+    from ytdigest.interfaces import Segment
+    from ytdigest.normalize import build_ledger
+    from ytdigest.summarize import PASSED_WITH_FLAGS, summarize
+    import ytdigest.summarize as S
+
+    segments = [Segment(id=0, start=0.0, end=5.0, text="恒指見二萬六",
+                        lang="yue", confidence=None, flags=[])]
+    ledger = build_ledger(segments)
+
+    # First call succeeds with a figure the ledger cannot verify (forcing a
+    # retry); the retry then dies on transport, as observed in the wild.
+    responses = ['{"theses":[{"ts":"00:00","thesis":"恒指上望三萬九","reasoning":""}],'
+                 '"actionable":[],"disagreements":[],"risks":[],"numbers":[],"views":[]}']
+
+    class Engine:
+        def __init__(self, cfg, model=None):
+            pass
+
+        def complete(self, system, user, max_tokens, timeout=None):
+            if responses:
+                return responses.pop(0)
+            raise StageError("deepseek transport failed after 3 attempts", "retryable")
+
+    original = S.DeepSeek
+    S.DeepSeek = Engine
+    try:
+        cfg = load_config(pathlib.Path("."))
+        payload, state, checks = summarize(cfg, segments, ledger, "yue", None, title="t")
+    finally:
+        S.DeepSeek = original
+
+    assert state == PASSED_WITH_FLAGS
+    assert payload["theses"][0]["thesis"] == "恒指上望三萬九"   # the first payload survived
