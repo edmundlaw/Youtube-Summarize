@@ -81,6 +81,53 @@ def _load_people(root: Path | None = None) -> tuple[dict[str, str], list[str]]:
     return lookup, [str(x).lower() for x in (data.get("not_people") or [])]
 
 
+def focus_aliases(root: Path | None = None) -> dict[str, str]:
+    """Every alias of every focus person -> their display name, lowercased.
+
+    Needed because the host parser is not a reliable way to find a person. It
+    looks for 「主持：」, which several title formats never use: a 【KC博士】
+    upload names him as "|| 羅家聰||" and the parser returns "哈富證券||26-07-22"
+    instead. Filtering on parsed hosts alone therefore skipped KC's own videos.
+    Searching the raw title for a known alias does not care about format.
+    """
+    import yaml
+
+    path = (root or REPO_ROOT) / "config" / "people.yaml"
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    wanted = {canonical_speaker(str(n), root) for n in (data.get("focus") or [])}
+    wanted.discard(None)
+    out: dict[str, str] = {}
+    for canonical, spec in (data.get("people") or {}).items():
+        display = (spec or {}).get("display") or canonical
+        if display not in wanted:
+            continue
+        for alias in [canonical, display, *((spec or {}).get("aliases") or [])]:
+            text = str(alias).strip().lower()
+            # One- and two-character aliases match far too much inside a title.
+            if len(text) >= 2:
+                out[text] = display
+    return out
+
+
+def focus_speakers(root: Path | None = None) -> set[str]:
+    """Canonical display names of the people worth summarising, or empty.
+
+    Empty means take everything. Anything unrecognised is dropped rather than
+    kept as a raw string, so a typo in the config cannot silently filter out
+    every video by matching nobody.
+    """
+    import yaml
+
+    path = (root or REPO_ROOT) / "config" / "people.yaml"
+    if not path.exists():
+        return set()
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    names = {canonical_speaker(str(n), root) for n in (data.get("focus") or [])}
+    return {n for n in names if n}
+
+
 def canonical_speaker(name: str | None, root: Path | None = None) -> str | None:
     """Resolve a spoken/parsed name to one canonical form.
 

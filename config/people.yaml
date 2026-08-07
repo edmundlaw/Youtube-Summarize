@@ -8,6 +8,18 @@
 # deliberate: an unattributed view is still useful, a misattributed one is
 # worse than useless.
 
+# Only episodes featuring one of these are summarised. Leave empty to take
+# every episode of every watched show.
+#
+# The channel filter is show-based, which is not the same thing: 4點痴線財經
+# rotates its hosts, so an episode presented by 湯麗鴻 Kimmy matched the show
+# filter and was summarised even though nobody here follows her. Names must
+# match a key or alias in `people` below.
+focus:
+  - 羅家聰
+  - 文錦輝
+  - 沈振盈
+
 people:
   羅家聰:
     display: 羅家聰 (KC)

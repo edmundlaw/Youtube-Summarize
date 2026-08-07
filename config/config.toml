@@ -14,6 +14,11 @@ timeout_normalize_s  = 300
 # Must exceed (chunks + 1) x the per-call timeout in summarize.py (300s),
 # or a map-reduce run is killed mid-flight and re-runs at full cost.
 timeout_summarize_s  = 3600
+# Voice identification: downloads audio, loads torch, embeds every segment.
+# Its own stage so this time is not charged against summarize's budget —
+# combining them took summarize to a 59-minute maximum against a 60-minute
+# timeout, and five videos died mid-stage.
+timeout_identify_s   = 3600
 timeout_publish_s     = 120
 max_attempts         = 3
 # Oldest-first, and never more than this many videos per invocation.

@@ -29,17 +29,27 @@ NEW = "new"
 FETCHED = "fetched"
 TRANSCRIBED = "transcribed"
 NORMALIZED = "normalized"
+IDENTIFIED = "identified"
 SUMMARIZED = "summarized"
 DONE = "done"
 FAILED = "failed"
 ABANDONED = "abandoned"
+#: Filtered out by the focus list — nobody we follow is on it. Terminal, and
+#: not a failure: it cost nothing and there is nothing to retry.
+SKIPPED = "skipped"
 
 # stage -> (status required to start, status written on success)
 STAGES: dict[str, tuple[str, str]] = {
     "fetch": (NEW, FETCHED),
     "transcribe": (FETCHED, TRANSCRIBED),
     "normalize": (TRANSCRIBED, NORMALIZED),
-    "summarize": (NORMALIZED, SUMMARIZED),
+    # Identification sits between normalize and summarize: it needs the
+    # segments, and the summary prompt needs its answer. Kept a separate stage
+    # so that loading torch and embedding an hour of audio does not run inside
+    # summarize's timeout, and so its memory is returned to the OS when the
+    # subprocess exits.
+    "identify": (NORMALIZED, IDENTIFIED),
+    "summarize": (IDENTIFIED, SUMMARIZED),
     "publish": (SUMMARIZED, DONE),
 }
 STAGE_ORDER = list(STAGES)
@@ -157,13 +167,16 @@ def claim_queue(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
     """Videos ready for work, oldest published first.
 
     A `failed` video is only eligible once its backoff has elapsed. `abandoned`
-    is never returned; it surfaces in `status` and waits for a human.
+    is never returned; it surfaces in `status` and waits for a human. `skipped`
+    is terminal too — re-claiming it would re-evaluate and re-log the same
+    decision on every run. Widening the focus list is a deliberate act, so
+    re-queueing after one is deliberate as well.
     """
     return list(
         conn.execute(
             """
             SELECT v.* FROM videos v
-            WHERE v.status NOT IN (?, ?)
+            WHERE v.status NOT IN (?, ?, ?)
               AND (
                 v.status <> ?
                 OR COALESCE((
@@ -174,7 +187,7 @@ def claim_queue(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
             ORDER BY v.published_at ASC
             LIMIT ?
             """,
-            (DONE, ABANDONED, FAILED, now_iso(), limit),
+            (DONE, ABANDONED, SKIPPED, FAILED, now_iso(), limit),
         )
     )
 

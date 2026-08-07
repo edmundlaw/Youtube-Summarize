@@ -223,6 +223,115 @@ class DeepSeek:
         }
 
 
+#: A show name followed by its broadcast date, e.g. "4點痴線財經 20260806".
+#: Every part of one episode carries this; only the parent lists the hosts.
+_EPISODE_KEY = re.compile(r"([一-鿿 A-Za-z0-9點]{2,20}?)\s*(\d{8})")
+
+
+def episode_key(title: str) -> str | None:
+    """Show + broadcast date, shared by every part of one episode.
+
+    The 第一節 / 第二節 parts carry no host names at all — only the parent
+    "主持：…" upload does. Without a key linking them, a person-based filter
+    can only ever see the parent, and the parts pass through unchecked. That is
+    exactly how an episode presented by hosts nobody follows was summarised.
+    """
+    match = _EPISODE_KEY.search(title or "")
+    if not match:
+        return None
+    return f"{match.group(1).strip()}-{match.group(2)}"
+
+
+def episode_hosts(conn, video: dict) -> list[str] | None:
+    """Hosts of this episode, from its own title or a sibling part's.
+
+    None means genuinely unknown — no title in the episode names anyone — and
+    callers must treat that as "cannot tell", never as "nobody". Dropping a
+    video because its title format changed would silently lose exactly the
+    content the filter exists to protect.
+    """
+    own = hosts_from_title(video.get("title", ""))
+    if own:
+        return own
+    key = episode_key(video.get("title", ""))
+    if not key:
+        return None
+    for row in conn.execute(
+        "SELECT title FROM videos WHERE channel_id = ? AND id != ?",
+        (video.get("channel_id"), video.get("id")),
+    ):
+        if episode_key(row["title"]) == key:
+            siblings = hosts_from_title(row["title"])
+            if siblings:
+                return siblings
+    return None
+
+
+def in_focus(conn, video: dict) -> tuple[bool, str]:
+    """Whether this episode features someone worth summarising, and why.
+
+    Three signals, in order of reliability:
+
+    1. A focus person's alias appearing in the title. Format-independent, so it
+       catches 【KC博士】…|| 羅家聰|| which the 主持 parser cannot.
+    2. The same, in a sibling part of the episode — 第一節 / 第二節 uploads
+       carry no names at all, only the parent "主持：…" one does.
+    3. A parsed host list naming real, recognised people, none of them in
+       focus. Only this rejects.
+
+    Anything else is unknown and kept. Dropping a video because its title
+    format changed would silently lose exactly what the filter protects.
+    """
+    from .views import canonical_speaker, focus_aliases, focus_speakers
+
+    focus = focus_speakers()
+    if not focus:
+        return True, "no focus list configured"
+    aliases = focus_aliases()
+
+    def named_in(text: str) -> str | None:
+        low = (text or "").lower()
+        for alias, display in aliases.items():
+            if alias in low:
+                return display
+        return None
+
+    hit = named_in(video.get("title", ""))
+    if hit:
+        return True, f"{hit} named in title"
+
+    key = episode_key(video.get("title", ""))
+    siblings = []
+    if key:
+        for row in conn.execute(
+            "SELECT title FROM videos WHERE channel_id = ? AND id != ?",
+            (video.get("channel_id"), video.get("id")),
+        ):
+            if episode_key(row["title"]) == key:
+                siblings.append(row["title"])
+                hit = named_in(row["title"])
+                if hit:
+                    return True, f"{hit} named in a sibling part"
+
+    # An explicit 「主持：」 declaration is the only host list worth rejecting on.
+    # hosts_from_title also scrapes hashtags and ||-separated segments, which on
+    # a 【KC博士】 upload yields "哈富證券||26-07-22" — junk that names nobody and
+    # must not be read as "hosted by someone other than KC". Requiring the
+    # literal 主持 keeps rejection tied to a real declaration.
+    #
+    # Note this rejects on the *raw* names, not canonical ones: 湯麗鴻 Kimmy is
+    # absent from people.yaml, and treating an unrecognised host as unknown let
+    # her episodes through — which is the case that prompted all of this.
+    for text in [video.get("title", ""), *siblings]:
+        if "主持" not in text:
+            continue
+        parsed = [h for h in hosts_from_title(text) if h.strip()]
+        if parsed:
+            named = {canonical_speaker(h) or h for h in parsed}
+            return False, f"hosted by {', '.join(sorted(named))[:60]}"
+    return True, "hosts could not be determined — kept"
+
+
 def hosts_from_title(title: str) -> list[str]:
     """Names listed after 主持 / 主持人 in the video title.
 

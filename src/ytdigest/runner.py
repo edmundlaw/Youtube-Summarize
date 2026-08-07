@@ -26,6 +26,7 @@ from . import db as D
 from .db import reap_orphan_runs as db_reap
 from .config import Config
 from .logging import get_logger
+from .summarize import in_focus
 
 log = get_logger()
 
@@ -210,6 +211,30 @@ def _identify_speakers(cfg: Config, conn, video: dict,
         return None
 
 
+def stage_identify(cfg: Config, conn, video: dict) -> None:
+    """Voice-identify this video's segments. Its own stage, deliberately.
+
+    This ran inside `stage_summarize` at first, and that was wrong twice over.
+    It loads torch and embeds an hour of audio, so summarize went from minutes
+    to an average of eleven and a maximum of fifty-nine against a sixty-minute
+    timeout -- five videos died mid-stage as a result. And the architecture
+    already says why each stage is its own subprocess: heavy model memory is
+    not reliably returned to the OS within a process, which matters on a 16 GB
+    machine that is already swapping.
+
+    Never fatal. A video with no attribution still summarises; it just
+    attributes nobody, which is the safe direction.
+    """
+    if not cfg.get("voice", "enabled", True):
+        return None
+    artifact = D.get_artifact(conn, video["id"], "normalized")
+    if artifact is None:
+        raise D.StageError("no normalized artifact", D.RETRYABLE)
+    segments = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))["segments"]
+    _identify_speakers(cfg, conn, video, segments)
+    return None
+
+
 def stage_summarize(cfg: Config, conn, video: dict) -> Path:
     from .normalize import LedgerEntry
     from .summarize import PROMPT_VERSION, summarize
@@ -225,7 +250,9 @@ def stage_summarize(cfg: Config, conn, video: dict) -> Path:
     segments = [Segment(**s) for s in data["segments"]]
     ledger = [LedgerEntry(**e) for e in data["ledger"]]
 
-    speakers = _identify_speakers(cfg, conn, video, data["segments"])
+    # Identification is its own stage now; here we only read what it stored.
+    from .summarize import speaker_map
+    speakers = speaker_map(conn, video["id"])
 
     transcript_artifact = D.get_artifact(conn, video["id"], "transcript")
     payload, state, checks = summarize(
@@ -347,6 +374,7 @@ STAGE_FUNCS = {
     "fetch": stage_fetch,
     "transcribe": stage_transcribe,
     "normalize": stage_normalize,
+    "identify": stage_identify,
     "summarize": stage_summarize,
     "publish": stage_publish,
 }
@@ -355,6 +383,7 @@ ARTIFACT_KIND = {
     "fetch": "audio",
     "transcribe": "transcript",
     "normalize": "normalized",
+    "identify": None,
     "summarize": "summary",
     "publish": None,
 }
@@ -466,9 +495,22 @@ def run_once(cfg: Config, conn, limit: int | None = None) -> dict:
     reaped = db_reap(conn, longest)
     if reaped:
         log.warning("run.reaped_orphan_stages", count=reaped)
-    stats = {"processed": 0, "completed": 0, "failed": 0}
+    stats = {"processed": 0, "completed": 0, "failed": 0, "skipped": 0}
     for video in D.claim_queue(conn, limit):
         video_id = video["id"]
+        # Checked here rather than at discovery: an episode's parts carry no
+        # host names, so a part discovered before its parent cannot be judged
+        # yet. Re-evaluating each run means it settles once the parent arrives,
+        # and costs nothing until then.
+        keep, reason = in_focus(conn, dict(video))
+        if not keep:
+            with D.transaction(conn):
+                conn.execute("UPDATE videos SET status = ? WHERE id = ?",
+                             (D.SKIPPED, video_id))
+            log.info("run.skipped", video_id=video_id, reason=reason,
+                     title=video["title"][:80])
+            stats["skipped"] += 1
+            continue
         stats["processed"] += 1
         while True:
             stage = D.next_stage_for(conn, video_id)
