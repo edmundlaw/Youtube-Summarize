@@ -209,6 +209,50 @@ directly, chunking it and summarising each chunk will beat one pass, even
 though the whole transcript fits the context window comfortably. Fitting is
 not the same as being covered well.
 
+## Who is on the episode is read off the title, and titles lie
+
+Two independent filters, and they are not interchangeable. `title_include` is
+per channel and runs at **discovery**, so a video it rejects is never stored.
+`in_focus` runs at **claim time** on each pass, because an episode's 第一節 /
+第二節 parts carry no host names and a part discovered before its parent cannot
+be judged yet.
+
+Use `title_include` when a channel names its presenter and rotates them:
+JK爸爸的投資頻道 runs 午後開股 daily, and only 6 of 16 recent episodes are JK Sir
+— the rest are Gary Sir, Ringo, Jason Sir. Use nothing when a channel is one
+person: 全職炒家's weekly 【熱點先機】 names nobody at all and is always Ron, so
+a name-based include would drop his main output. Do not reach for `in_focus` to
+do either job; it keeps anything it cannot judge, on purpose.
+
+Title formats that have each broken the parser, all found on real videos:
+
+- **`主持 Wendy`** — space, no colon. Requiring the colon meant "no declaration",
+  which fell through to the hashtag branch and answered `港股, 美股`.
+- **`#恆指 #倍升股 #牛市`** — the hashtag fallback exists for 1號月台, which tags
+  its guest `#羅家聰`. On a channel that tags topics it declared three market
+  indices to be the speakers. A tag counts only if it resolves to the roster.
+- **`｜RON LAU｜主持 Wendy`** — the declaration names the moderator, not the
+  analyst everyone watches for. That list is also the whitelist `parse_views`
+  filters attributions against, so a moderator-only roster silently **discards
+  every view Ron makes on his own channel**. A declaration is widened by anyone
+  else the title names; roster names alone never create one, because
+  `JK Sir｜Jason Sir｜Car` declares nobody and "the sole host is JK Sir" would
+  hand him the other two's calls.
+- **`|| 羅家聰||`** — no keyword at all, so `hosts_from_title` returns
+  `哈富證券||26-07-22`. This is why `in_focus` checks focus aliases against the
+  raw title before it looks at any parsed host list.
+
+Aliases are matched as lowercased substrings of the whole title, so short ones
+are dangerous — bare `ron` matches Micron, which these channels discuss by name.
+`focus_aliases` already drops anything under two characters; keep the rest long
+enough to mean only the person.
+
+RSS is the only listing that sees everything. `list_uploads` reads the uploads
+tab, which **omits live streams** — both channels' 直播 and 午後開股 are absent
+from it and present in the feed. It also carries no duration, so a channel's
+`min_duration_s` cannot reject at discovery: 全職炒家's 50-second 紅綠燈AI模型
+product ads are stored first and rejected at fetch.
+
 ## Conventions
 
 - Filenames are **always** `<video_id>`. Titles contain CJK, emoji, slashes and
