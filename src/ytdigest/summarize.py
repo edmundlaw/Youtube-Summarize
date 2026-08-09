@@ -313,11 +313,15 @@ def in_focus(conn, video: dict) -> tuple[bool, str]:
                 if hit:
                     return True, f"{hit} named in a sibling part"
 
-    # An explicit 「主持：」 declaration is the only host list worth rejecting on.
-    # hosts_from_title also scrapes hashtags and ||-separated segments, which on
-    # a 【KC博士】 upload yields "哈富證券||26-07-22" — junk that names nobody and
-    # must not be read as "hosted by someone other than KC". Requiring the
-    # literal 主持 keeps rejection tied to a real declaration.
+    # An explicit 「主持」 declaration is the only host list worth rejecting on,
+    # so this uses declared_hosts and never the hashtag fallback: on a 全職炒家
+    # upload that fallback answers 恆指, 倍升股, 牛市, and on a 【KC博士】 one the
+    # ||-split yields "哈富證券||26-07-22" — junk that names nobody and must not
+    # be read as "hosted by someone other than KC".
+    #
+    # 嘉賓-only titles stay unknown rather than rejected. A guest declaration
+    # says who visited, not who presents, so a focus host who went unnamed in
+    # his own episode would otherwise be dropped by his guest's name.
     #
     # Note this rejects on the *raw* names, not canonical ones: 湯麗鴻 Kimmy is
     # absent from people.yaml, and treating an unrecognised host as unknown let
@@ -325,32 +329,35 @@ def in_focus(conn, video: dict) -> tuple[bool, str]:
     for text in [video.get("title", ""), *siblings]:
         if "主持" not in text:
             continue
-        parsed = [h for h in hosts_from_title(text) if h.strip()]
+        parsed = [h for h in declared_hosts(text) if h.strip()]
         if parsed:
             named = {canonical_speaker(h) or h for h in parsed}
             return False, f"hosted by {', '.join(sorted(named))[:60]}"
     return True, "hosts could not be determined — kept"
 
 
-def hosts_from_title(title: str) -> list[str]:
-    """Names listed after 主持 / 主持人 in the video title.
+# 主持 (host) and 嘉賓 (guest) both identify who is speaking. Channels separate
+# the keyword from the names inconsistently: RagaFinance writes 主持：棠哥,
+# 全職炒家 writes 主持 Wendy with a space and no colon. Requiring the colon read
+# the second form as "no declaration at all" and fell through to the hashtag
+# branch below, which answered 港股, 美股 — the topic tags — as the hosts.
+_DECLARATION = re.compile(r"(?:主持人?|嘉賓)\s*(?:[:：]\s*|\s+)(.+)$")
 
-    Needed because a station trailer for another programme runs mid-episode and
-    names that programme's host. On a real 55-minute episode the summariser
-    picked the name up from the advert and attributed three claims to him at
-    timestamps where he is never mentioned — the numbers verified clean, so
-    nothing downstream could catch it. Wrong attribution is fatal to a
-    prediction track record: it credits calls to someone who never made them.
+
+def declared_hosts(title: str) -> list[str]:
+    """Names from an explicit 主持／嘉賓 declaration. Empty if there is none.
+
+    Kept separate from `hosts_from_title` because the two callers want opposite
+    things when a title declares nobody: the prompt wants a best guess, while
+    `in_focus` must reject a video only on a real declaration. Sharing one
+    function meant a guess reached the rejection path.
     """
-    # 主持 (host) and 嘉賓 (guest) both identify who is speaking. Channels are
-    # inconsistent: RagaFinance uses 主持：, Kinnis uses 嘉賓：, and 1號月台 uses
-    # neither — it tags the guest with a #hashtag instead.
-    match = re.search(r"(?:主持人?|嘉賓)\s*[:：]\s*(.+)$", title)
+    match = _DECLARATION.search(title)
     if not match:
-        tags = re.findall(r"#([^\s#]+)", title)
-        known = [t for t in tags if not t.lower().startswith(("kctalk", "kc博士"))]
-        return known[:3]
-    tail = re.split(r"[|｜\[]", match.group(1))[0]
+        return []
+    # Stop at the first hashtag as well as the first separator: the names run
+    # up to the topic tags, and 「主持 Wendy #港股 #美股」 is one name, not three.
+    tail = re.split(r"[|｜\[#]", match.group(1))[0]
     names: list[str] = []
     for part in re.split(r"[、,，/／&]|\s+同\s+", tail):
         part = part.strip()
@@ -365,6 +372,50 @@ def hosts_from_title(title: str) -> list[str]:
         if alias and alias.group(1).strip():
             names.append(alias.group(1).strip())
     return names
+
+
+def hosts_from_title(title: str) -> list[str]:
+    """Names listed after 主持 / 主持人 in the video title.
+
+    Needed because a station trailer for another programme runs mid-episode and
+    names that programme's host. On a real 55-minute episode the summariser
+    picked the name up from the advert and attributed three claims to him at
+    timestamps where he is never mentioned — the numbers verified clean, so
+    nothing downstream could catch it. Wrong attribution is fatal to a
+    prediction track record: it credits calls to someone who never made them.
+    """
+    from .views import canonical_speaker, named_in_title
+
+    declared = declared_hosts(title)
+    if declared:
+        # A declaration names the cast but not always all of it: 「｜RON LAU｜主持
+        # Wendy」 declares the moderator only. Anyone else the title names is
+        # added, because this list is also the whitelist parse_views checks
+        # attributions against — leaving Ron out of his own episode would have
+        # discarded every view credited to him.
+        #
+        # Roster names alone never *create* a list. "JK Sir｜Jason Sir｜Car"
+        # declares nobody and only JK is in the roster; answering "the sole host
+        # is JK Sir" would hand him Jason's and Car's calls. No list means the
+        # prompt writes 主持 throughout, which is the safe direction.
+        hosts: list[str] = []
+        for name in [*declared, *named_in_title(title)]:
+            resolved = canonical_speaker(name) or name.strip()
+            if resolved and resolved not in hosts:
+                hosts.append(resolved)
+        return hosts
+    # 1號月台 declares nobody and tags the guest instead: #Kctalk #羅家聰. Only a
+    # tag that resolves to someone in the roster is a person — 全職炒家 tags
+    # #恆指 #倍升股 #牛市, and feeding those in as the host list told the model
+    # three market indices were the speakers.
+    # Deduped: #Kctalk #羅家聰 is the show tag beside the person's tag, and both
+    # resolve to him.
+    tagged: list[str] = []
+    for tag in re.findall(r"#([^\s#]+)", title):
+        person = canonical_speaker(tag)
+        if person and person not in tagged:
+            tagged.append(person)
+    return tagged[:3]
 
 
 def _system_prompt(ledger: list[LedgerEntry], lang: str,

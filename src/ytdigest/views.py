@@ -81,15 +81,7 @@ def _load_people(root: Path | None = None) -> tuple[dict[str, str], list[str]]:
     return lookup, [str(x).lower() for x in (data.get("not_people") or [])]
 
 
-def focus_aliases(root: Path | None = None) -> dict[str, str]:
-    """Every alias of every focus person -> their display name, lowercased.
-
-    Needed because the host parser is not a reliable way to find a person. It
-    looks for 「主持：」, which several title formats never use: a 【KC博士】
-    upload names him as "|| 羅家聰||" and the parser returns "哈富證券||26-07-22"
-    instead. Filtering on parsed hosts alone therefore skipped KC's own videos.
-    Searching the raw title for a known alias does not care about format.
-    """
+def _alias_map(root: Path | None, focus_only: bool) -> dict[str, str]:
     import yaml
 
     path = (root or REPO_ROOT) / "config" / "people.yaml"
@@ -101,13 +93,47 @@ def focus_aliases(root: Path | None = None) -> dict[str, str]:
     out: dict[str, str] = {}
     for canonical, spec in (data.get("people") or {}).items():
         display = (spec or {}).get("display") or canonical
-        if display not in wanted:
+        if focus_only and display not in wanted:
             continue
         for alias in [canonical, display, *((spec or {}).get("aliases") or [])]:
             text = str(alias).strip().lower()
             # One- and two-character aliases match far too much inside a title.
             if len(text) >= 2:
                 out[text] = display
+    return out
+
+
+def focus_aliases(root: Path | None = None) -> dict[str, str]:
+    """Every alias of every focus person -> their display name, lowercased.
+
+    Needed because the host parser is not a reliable way to find a person. It
+    looks for 「主持：」, which several title formats never use: a 【KC博士】
+    upload names him as "|| 羅家聰||" and the parser returns "哈富證券||26-07-22"
+    instead. Filtering on parsed hosts alone therefore skipped KC's own videos.
+    Searching the raw title for a known alias does not care about format.
+    """
+    return _alias_map(root, focus_only=True)
+
+
+def roster_aliases(root: Path | None = None) -> dict[str, str]:
+    """The same map over everyone known, focus or not.
+
+    A declaration names only part of the cast: 「｜RON LAU｜主持 Wendy」 declares
+    the moderator and leaves the analyst — the reason anyone watches — out of
+    the host list. That mattered twice over, because the host list is also the
+    whitelist `parse_views` filters attributions against: every view Ron made on
+    his own channel would have been dropped as not-on-the-roster.
+    """
+    return _alias_map(root, focus_only=False)
+
+
+def named_in_title(title: str, root: Path | None = None) -> list[str]:
+    """Display names of roster people whose alias appears in the title."""
+    low = (title or "").lower()
+    out: list[str] = []
+    for alias, display in roster_aliases(root).items():
+        if alias in low and display not in out:
+            out.append(display)
     return out
 
 

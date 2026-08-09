@@ -19,6 +19,8 @@ focus:
   - 羅家聰
   - 文錦輝
   - 沈振盈
+  - Ron Lau
+  - 陳立展
 
 people:
   羅家聰:
@@ -42,6 +44,15 @@ people:
   顧芷筠:
     display: Debby 顧芷筠
     aliases: [Debby, Debby 顧芷筠]
+  # Aliases are matched as lowercased substrings of the whole title, so a short
+  # one is dangerous: bare "ron" would match Micron, which both channels discuss
+  # by name. Every alias here is long enough to mean only the person.
+  Ron Lau:
+    display: Ron Lau (全職炒家)
+    aliases: [ron lau, ronlau, 全職炒家, 少年股神ron]
+  陳立展:
+    display: 陳立展 (JK Sir)
+    aliases: [陳立展, jk陳立展, jk sir, jksir, jk爸爸]
 
 # Strings that look like a name in a title but are not a person: sponsors,
 # programme names, dates. Matched as substrings, case-insensitive.

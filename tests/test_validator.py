@@ -191,15 +191,19 @@ def test_hosts_are_taken_from_the_title():
     the numbers verified clean, so nothing downstream caught it."""
     from ytdigest.summarize import hosts_from_title
 
+    # Names come back canonical. parse_views compares attributions against
+    # canonical_speaker(h) anyway, so resolving here changes no decision — but it
+    # collapses 羅家聰 KC 博士 and a bare 羅家聰 into one entry, and the roster
+    # *size* is load-bearing: at exactly one person, 「主持」 can only mean them.
     hosts = hosts_from_title(
         "CC Raga Finance：一名經人 20260723：主持：羅家聰 KC 博士、Eugene 羅尚沛、Debby 顧芷筠"
     )
-    assert hosts == ["羅家聰 KC 博士", "Eugene 羅尚沛", "Debby 顧芷筠"]
+    assert hosts == ["羅家聰 (KC)", "Eugene 羅尚沛", "Debby 顧芷筠"]
     assert "沈振盈" not in hosts and "沈大師" not in hosts
 
-    # A parenthesised alias is the form actually spoken, so keep both.
+    # A parenthesised alias is the form actually spoken; both resolve to one person.
     assert hosts_from_title("錢錢錢打到嚟 - 主持：沈振盈(沈大師)、蔡康年") == \
-        ["沈振盈", "沈大師", "蔡康年"]
+        ["沈振盈 (沈大師)", "蔡康年"]
     assert hosts_from_title("no host listed") == []
 
 

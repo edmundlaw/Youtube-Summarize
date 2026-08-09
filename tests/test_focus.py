@@ -88,3 +88,58 @@ def test_skipped_videos_are_not_reclaimed(conn):
     add(conn, "s1", "anything")
     conn.execute("UPDATE videos SET status=? WHERE id='s1'", (D.SKIPPED,))
     assert [r["id"] for r in D.claim_queue(conn, 10)] == []
+
+
+# --- 全職炒家 RON LAU and JK爸爸: two channels whose titles broke the parser ---
+
+RON_LIVE = ("【週二直播】一片睇清8月恆指部署！ 阿里10億大資金流出！小米, 藥明, 滙豐, "
+            "AAPL, GOOG 最新分析｜投資花越少時間越容易成功？｜RON LAU｜主持 Wendy #港股 #美股")
+RON_DAILY = ("恆指急升近1000點，潛力股已偷步上升！阿里,騰訊,華虹,中芯,滙豐,渣打,MU,NVDA "
+             "最新分析【熱點先機】 #恆指 #倍升股 #牛市 #熊市")
+JK_LIVE = ("【午後開股】30/07/2026 倍數責任完成 ?｜#恒指 挑戰 26000 #港股 8 月點分析 ?｜"
+           "#3690 #美團 可以繼續上 ?｜JK Sir｜Jason Sir｜Car｜投創教育")
+
+
+def test_a_declaration_without_a_colon_is_still_a_declaration():
+    """「主持 Wendy」 separates the keyword from the name with a space. Requiring
+    the colon read it as no declaration at all and fell through to the hashtag
+    branch, which answered 港股, 美股 — the topic tags — as the hosts."""
+    from ytdigest.summarize import declared_hosts
+
+    assert declared_hosts(RON_LIVE) == ["Wendy"]
+    assert declared_hosts(RON_DAILY) == []
+
+
+def test_topic_hashtags_are_never_read_as_speakers():
+    """#恆指 #倍升股 #牛市 are indices and a market condition. Handing them to the
+    prompt declared three market indices to be the people speaking."""
+    from ytdigest.summarize import hosts_from_title
+
+    assert hosts_from_title(RON_DAILY) == []
+    # The tag fallback still works where a tag really is a person (1號月台).
+    assert hosts_from_title("港股7月未升完？ #Kctalk #羅家聰") == ["羅家聰 (KC)"]
+
+
+def test_a_declaration_is_widened_by_anyone_else_the_title_names():
+    """Wendy moderates; Ron is the analyst and the reason anyone watches. The
+    host list is also the whitelist parse_views filters attributions against, so
+    a list of just the moderator discards every view Ron makes on his own
+    channel."""
+    from ytdigest.summarize import hosts_from_title
+
+    assert hosts_from_title(RON_LIVE) == ["Wendy", "Ron Lau (全職炒家)"]
+
+
+def test_roster_names_alone_never_create_a_host_list():
+    """JK Sir｜Jason Sir｜Car declares nobody, and only JK is on the roster.
+    Answering "the sole host is JK Sir" would hand him the other two's calls;
+    an empty list makes the prompt write 主持 throughout instead."""
+    from ytdigest.summarize import hosts_from_title
+
+    assert hosts_from_title(JK_LIVE) == []
+
+
+def test_both_new_channels_are_kept(conn):
+    for vid, title in (("r1", RON_LIVE), ("r2", RON_DAILY), ("j1", JK_LIVE)):
+        keep, reason = in_focus(conn, add(conn, vid, title))
+        assert keep, f"{title[:40]} skipped: {reason}"
