@@ -217,7 +217,11 @@ def _esc(text: object) -> str:
     return html.escape(str(text), quote=False)
 
 
-def render_telegram(video: dict, payload: dict, checks: list[Check], state: str) -> str:
+def render_telegram(video: dict, payload: dict, checks: list[Check]) -> str:
+    """The digest reports only what needs checking. A figure that verified
+    cleanly gets no marker and the validator's own verdict is not shown —
+    confirmations of success are noise, and the markdown file keeps the full
+    audit trail for anyone who wants it."""
     unverified = [c for c in checks if c.verdict == "missing"]
     lines = [
         f"🎬 <b>{_esc(video['title'])[:120]}</b>",
@@ -247,15 +251,22 @@ def render_telegram(video: dict, payload: dict, checks: list[Check], state: str)
             lines.append(f"<code>[{_mmss(item.get('ts', ''))}]</code> {fmt(item)}")
 
     if payload.get("numbers"):
-        lines += ["", "<b>🔢 數字</b>　✓核對到　⚠︎需核實"]
         by_figure = {c.figure: c for c in checks}
-        for item in payload["numbers"][:12]:
-            figure = str(item.get("figure", ""))
-            check = by_figure.get(figure)
-            tick = "✓" if check and check.verdict == "ok" else "⚠︎"
-            lines.append(f"{tick} <b>{_esc(figure)}</b> {_esc(item.get('context', ''))}")
+        shown = payload["numbers"][:12]
+        marks = [
+            "" if (c := by_figure.get(str(i.get("figure", "")))) and c.verdict == "ok"
+            else "⚠︎ "
+            for i in shown
+        ]
+        # The legend only earns its line when something actually carries the mark.
+        legend = "　⚠︎需核實" if any(marks) else ""
+        lines += ["", f"<b>🔢 數字</b>{legend}"]
+        for item, mark in zip(shown, marks):
+            lines.append(
+                f"{mark}<b>{_esc(item.get('figure', ''))}</b> "
+                f"{_esc(item.get('context', ''))}"
+            )
 
-    lines += ["", f"<i>validator: {state}</i>"]
     text = "\n".join(lines)
     if len(text) > TG_LIMIT:
         text = text[: TG_LIMIT - 40].rsplit("\n", 1)[0] + "\n<i>…(截斷)</i>"

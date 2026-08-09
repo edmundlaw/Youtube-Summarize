@@ -338,7 +338,7 @@ def stage_publish(cfg: Config, conn, video: dict) -> Path:
     path = write_markdown(cfg.out_dir, view, markdown)
 
     if cfg.get("publish", "telegram", False) and _is_newsworthy(cfg, video):
-        send_telegram(cfg, render_telegram(view, data["payload"], checks, data["state"]))
+        send_telegram(cfg, render_telegram(view, data["payload"], checks))
 
     from .summarize import hosts_from_title
     from .views import parse_views, store_views, sync_instruments
