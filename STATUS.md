@@ -38,6 +38,20 @@ measured here and the unverified items are mostly ledger gaps rather than model
 fabrications, M2 never gets built. If it climbs, there is now a validator to
 prove ASR actually helps rather than assuming it.
 
+**A second trigger appeared on 2026-08-09, and it is not about quality.**
+全職炒家 RON LAU (`UCZGzrIUFtkSwidtKx7NH-Zg`) has **no captions at all** — ten
+consecutive uploads checked, `automatic_captions` empty on every one. His live
+streams carry a single `subtitles` track and it is `live_chat`, which
+`vtt.is_usable_subtitle_track` correctly refuses. The only videos on the channel
+that do have captions are the 50-second 紅綠燈AI模型 product ads.
+
+So the flag rate is no longer the whole question. The rule above assumes a
+transcript exists and asks whether a better one is worth building; this is a
+channel that cannot be summarised at any quality without ASR. Every upload
+fetches, then abandons at `transcribe`. The channel is left enabled rather than
+disabled, so that the cost of not having M2 stays visible instead of quietly
+disappearing from the queue.
+
 ## External review, 2026-07-25
 
 A cloud code review (Opus 5, clean checkout) found six defect classes. Every
