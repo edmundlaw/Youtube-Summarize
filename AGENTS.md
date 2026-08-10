@@ -33,8 +33,12 @@ generation. The ledger is the authority; the LLM is not.
 
 ## Verified environment facts
 
-- `mlx-community/Qwen3-ASR-1.7B-8bit` exists on HuggingFace (checked
-  2026-07-25). The 0.6B variant also exists if the 1.7B proves too slow.
+- The MLX build of Qwen3-ASR is **`mlx-community/Qwen3-ASR-1.7B-bf16`**, not the
+  `-8bit` this file claimed until 2026-08-11 — that repo id does not exist. Run
+  it through `mlx-audio` (`mlx_audio.stt.generate.load_model`), which exposes
+  `system_prompt` for context biasing and `repetition_penalty`. Measured 4.8x
+  real time warm, 5.2 GB peak, on an M4/16 GB. `Qwen/Qwen3-ASR-0.6B` exists if
+  the 1.7B proves too heavy.
 - DeepSeek serves `deepseek-v4-flash` and `deepseek-v4-pro`. **Not**
   `deepseek-chat` / `deepseek-reasoner` — those IDs 404. Always hit
   `GET /models` rather than hardcoding from memory.
@@ -72,6 +76,34 @@ generation. The ledger is the authority; the LLM is not.
   The glossary axis was **not** re-tested: the sample video contains exactly
   one protected term (`yoy`) and neither model kept it, which is too thin to
   conclude anything. Re-run on a vocabulary-rich episode before revisiting.
+
+## The captions are wrong, and the validator cannot see it
+
+Measured 2026-08-11 across 5,074,981 characters of stored transcript: **中芯
+appears 0 times, 中心 288 times.** SMIC has never once been transcribed
+correctly. 華虹 comes out 華紅力 in one sentence and 紅能力 in the next. 9988
+appears as `九8八`. 淨流入 → 正留入. 沽 → 孤, 349 against 97.
+
+**The 97.4% verified rate over 5,438 figures does not mean what it looks like.**
+The validator compares the summary against a ledger built from the *same*
+transcript, so a mis-heard number is mis-heard identically on both sides and
+passes. It measures the model's fidelity to the transcript, never the
+transcript's fidelity to the speaker.
+
+Proven on `MgN00MCDDRM` @ 7483 s: captions say 中芯 北水正留入 **29億**, then
+contradict themselves 30 s later with 接近三百億. Both Whisper and Qwen3-ASR
+independently hear **299億**, and the surrounding figures (華虹 56億, 騰訊
+150億, 阿里 381億) only make sense at ~300億. **A 10x error is in the production
+ledger.** See `docs/superpowers/specs/2026-08-11-asr-bake-off-results.md`.
+
+Two things follow for anyone touching this area:
+
+- **Do not cite the verified rate as evidence of transcript quality.** It is
+  blind by construction.
+- **`numbers.py` silently corrupts spoken digit strings.** 九九八八 → `8.0`,
+  一三四七 → `7.0`, 九八一 → `1.0` — it returns the last digit rather than
+  failing. Compound forms (二百九十九億, 五十六億) are fine. This must be fixed
+  before any ASR that speaks tickers aloud feeds the ledger.
 
 ## Findings that constrain the design
 
