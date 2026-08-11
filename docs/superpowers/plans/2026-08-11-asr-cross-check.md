@@ -140,6 +140,32 @@ two or three, an approximation, and 23 would be a fabrication."
 
 ### Task 2: Let the ledger find spoken digit strings at all
 
+> **OUTCOME 2026-08-11: both patterns below were REJECTED on real data and
+> `_PATTERNS` was restored to its pre-task state.** Keep this section for the
+> reasoning; do not implement it.
+>
+> The three-digit run does not isolate tickers. Across the corpus it matched
+> Cantonese approximation and hesitation — 八九七七七七八 → 8,977,778,
+> 三四三兩三四 → 343,234, 三四三 → 343 nine times — because adjacent digits are
+> how the language approximates (三四 = "three or four").
+>
+> The spoken-year pattern looked safe because 年 bounds it. It was not: its
+> **only** match in all 74 stored transcripts was 三四五六年 → the year 3456, out
+> of 「可能係三三三四五六年咁樣」. Restricted to real centuries it matched nothing
+> at all, so a correct version would earn nothing.
+>
+> Ledger entries are authoritative, so either pattern gives a fabricated summary
+> figure something to verify against — the false-PASS class the 2026-07-25
+> external review already found twice.
+>
+> **Consequence for the rest of the plan:** spoken tickers stay out of the
+> ledger and simply go unchecked, which is safe — `compare` returns `absent`,
+> not a false dispute. Nothing downstream depended on them: the 29億/299億 catch
+> that justifies this whole plan rests on the 億 magnitude word, not on digit
+> runs. Task 2's lasting deliverable is
+> `tests/test_numbers.py::test_hesitation_never_becomes_a_figure`, which pins
+> the ruling so neither pattern gets re-added.
+
 Task 1 makes `cn_to_number` parse `七零零`. The ledger still will not see it: `_PATTERNS` deliberately excludes bare Chinese numerals, because 一 and 十 occur constantly in prose. A three-digit run is different, and without this the caption ledger (Arabic `700`) and the ASR ledger (spoken `七零零`) have nothing in common to compare.
 
 **Files:**
