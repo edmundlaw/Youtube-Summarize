@@ -246,6 +246,13 @@ _PATTERNS: list[tuple[str, str]] = [
     (COUNT, rf"[\d.,]+\s*{_MAG}"),
     # years: 2022年 / 二零二二年
     (YEAR, r"(?:19|20)\d{2}\s*年"),
+    (YEAR, rf"[{_CN_D}]{{4}}\s*年"),
+    # Spoken digit strings: 七零零, 九九八八, 一三四七. Qwen3-ASR renders tickers
+    # and some index levels this way where the captions render Arabic digits --
+    # without this the two ledgers share nothing and every figure cross-checks
+    # as `absent`. Three characters minimum, and the lookarounds stop this
+    # stealing the tail of a compositional numeral such as 二百九十九.
+    (COUNT, rf"(?<![{_CN_NUM}])[{_CN_D}]{{3,}}(?![{_CN_NUM}])"),
     # Bare Arabic numbers, lowest priority so every unit-bearing pattern above
     # wins first. These carry most of the price levels an analyst actually
     # states — 26500, 450, 205 — so omitting them leaves the ledger blind to

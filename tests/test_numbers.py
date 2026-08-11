@@ -223,3 +223,30 @@ def test_compositional_numerals_are_unaffected():
     assert cn_to_number("十三") == 13
     assert cn_to_number("三萬五千") == 35000
     assert cn_to_number("五") == 5
+
+
+def test_spoken_tickers_enter_the_ledger():
+    """YouTube's captions write tickers as Arabic digits and Qwen speaks them.
+    Unless both reach the ledger there is nothing to cross-check."""
+    from ytdigest.numbers import find_numbers
+
+    got = {f.raw: f.value for f in find_numbers("譬如七零零啦，九九八八啦，一三四七啦")}
+    assert got["七零零"] == 700
+    assert got["九九八八"] == 9988
+    assert got["一三四七"] == 1347
+
+
+def test_spoken_years_are_years_not_quantities():
+    """二零二五年 must classify as YEAR like its Arabic twin, or is_financially
+    _meaningful lets a calendar year into the ledger as a figure."""
+    from ytdigest.numbers import YEAR, find_numbers
+
+    got = [f for f in find_numbers("到二零二五年為止") if f.unit == YEAR]
+    assert got and got[0].value == 2025
+
+
+def test_ordinary_prose_still_yields_no_bare_chinese_numbers():
+    """一 and 十 are everywhere in speech. Only runs of three or more count."""
+    from ytdigest.numbers import find_numbers
+
+    assert find_numbers("我一於唔買，十分之危險") == []
