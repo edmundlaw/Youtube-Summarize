@@ -1,6 +1,28 @@
 # Cross-checking captions with our own ASR
 
-**Status:** design approved 2026-08-11. Bake-off gates everything below it.
+**Status:** design approved 2026-08-11. **Bake-off run and passed the same day**
+— results in `2026-08-11-asr-bake-off-results.md`, which supersedes this file
+wherever the two differ. Build approved.
+
+**What the bake-off changed:**
+
+- Model decided: **`mlx-community/Qwen3-ASR-1.7B-bf16`** via `mlx-audio`, with
+  `system_prompt` biasing and `repetition_penalty`. (The `-8bit` id named below
+  and in `AGENTS.md` does not exist.) Whisper is rejected: it scores **0 on 口語
+  on every run**, invents errors from the bias list (資金流 → 紫金流), and
+  degenerated into several hundred repetitions of one character.
+- **New prerequisite, blocking:** `numbers.py` returns the *last digit* of a
+  spoken digit string rather than failing — 九九八八 → `8.0`, 一三四七 → `7.0`,
+  九八一 → `1.0`. Qwen speaks tickers that way. This must be fixed first or the
+  cross-check manufactures disputes out of noise.
+- **Full mode is justified independently of the cross-check**, not just for Ron:
+  the captions dropped an entire provenance sentence (摩根大通 … 四月一號到六月
+  三十號) that both models recovered. Targeted mode cannot see omissions.
+- Peak memory is **5.2 GB**, not the incidental figure assumed below. ASR and
+  voice ID must run sequentially within the audio stage, never concurrently.
+- The bias term list should be built **per video** from `instruments.yaml` plus
+  that video's resolved instruments. A global list is what made Whisper produce
+  紫金流; biasing pulls output toward whatever it is handed.
 
 ## The problem
 
