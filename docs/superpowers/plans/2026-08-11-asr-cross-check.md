@@ -836,9 +836,13 @@ Nothing here resolves a disagreement. ASR is not ground truth either."
 Append to `tests/test_crosscheck.py`:
 
 ```python
-def test_a_dead_asr_leaves_rows_unchecked_and_never_raises(conn, monkeypatch):
+def test_a_dead_asr_leaves_rows_unchecked_and_never_raises(conn, monkeypatch, tmp_path):
     """A safety feature that takes the pipeline down is a worse bug than the one
-    it fixes. Every failure path must end with the video still publishable."""
+    it fixes. Every failure path must end with the video still publishable.
+
+    `wav` must be a real path, not None: None short-circuits before the engine is
+    ever loaded, so the test would pass without exercising the failure at all.
+    """
     from ytdigest import runner
 
     conn.execute("INSERT INTO videos (id, channel_id, title, discovered_at, status) "
@@ -847,14 +851,38 @@ def test_a_dead_asr_leaves_rows_unchecked_and_never_raises(conn, monkeypatch):
                  "VALUES ('v','29億','2900000000','hkd',100.0)")
     conn.commit()
 
-    monkeypatch.setattr(runner, "_load_asr",
-                        lambda cfg: (_ for _ in ()).throw(RuntimeError("no mlx")))
-    cfg = type("C", (), {"get": lambda self, s, k, d=None: d,
-                         "data_dir": pathlib.Path("/tmp")})()
-    counts = runner._crosscheck_figures(cfg, conn, {"id": "v", "duration_s": 600}, None)
+    loaded = []
 
+    def _boom(cfg):
+        loaded.append(True)
+        raise RuntimeError("no mlx on this machine")
+
+    monkeypatch.setattr(runner, "_load_asr", _boom)
+    cfg = type("C", (), {"get": lambda self, s, k, d=None: d,
+                         "data_dir": tmp_path})()
+    wav = tmp_path / "v.wav"
+    wav.write_bytes(b"")
+    counts = runner._crosscheck_figures(cfg, conn, {"id": "v", "duration_s": 600}, wav)
+
+    assert loaded, "engine was never loaded — the failure path was not exercised"
     assert counts == {}
     assert conn.execute("SELECT crosscheck FROM number_ledger").fetchone()[0] is None
+
+
+def test_a_disabled_crosscheck_is_a_no_op(conn, tmp_path):
+    """The config switch must skip the work without touching any row."""
+    from ytdigest import runner
+
+    conn.execute("INSERT INTO videos (id, channel_id, title, discovered_at, status) "
+                 "VALUES ('v','c','t','2026-01-01','normalized')")
+    conn.execute("INSERT INTO number_ledger (video_id, raw_text, normalized, unit, start_s) "
+                 "VALUES ('v','29億','2900000000','hkd',100.0)")
+    conn.commit()
+
+    cfg = type("C", (), {"get": lambda self, s, k, d=None: False,
+                         "data_dir": tmp_path})()
+    assert runner._crosscheck_figures(cfg, conn, {"id": "v", "duration_s": 600},
+                                      tmp_path / "v.wav") == {}
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -975,24 +1003,37 @@ crosscheck = true       # second reading of every ledger figure; false disables
 Run: `.venv/bin/python -m pytest -q && .venv/bin/python -m pyflakes src/ytdigest tests`
 Expected: all green.
 
-- [ ] **Step 7: Run it on the video the bake-off used**
+- [ ] **Step 7: Run it on the video the bake-off used — the acceptance test**
 
-Run: `.venv/bin/ytdigest retry MgN00MCDDRM` then:
+The worktree's `data/state.db` is a snapshot of production carrying this video's
+350 real ledger rows. Call the cross-check directly rather than `ytdigest retry`:
+`retry` re-runs every stage including summarize, which costs a paid DeepSeek call
+and re-publishes, neither of which this proves anything about.
 
 ```bash
-.venv/bin/python -c "
+.venv/bin/python - <<'PY'
+from pathlib import Path
 from ytdigest.config import load_config
-from ytdigest import db as D
-c=D.connect(load_config().db_path)
-for r in c.execute(\"SELECT crosscheck, COUNT(*) n FROM number_ledger WHERE video_id='MgN00MCDDRM' GROUP BY crosscheck\"):
+from ytdigest import db as D, runner
+from ytdigest.voice import audio_for
+
+cfg = load_config(); conn = D.connect(cfg.db_path)
+video = dict(conn.execute("SELECT * FROM videos WHERE id='MgN00MCDDRM'").fetchone())
+with audio_for(video["id"], cfg.data_dir / "audio") as wav:
+    print("counts:", runner._crosscheck_figures(cfg, conn, video, wav))
+for r in conn.execute(
+    "SELECT raw_text, normalized, asr_normalized FROM number_ledger "
+    "WHERE video_id='MgN00MCDDRM' AND crosscheck='disputed'"):
     print(dict(r))
-for r in c.execute(\"SELECT raw_text, normalized, asr_normalized FROM number_ledger WHERE video_id='MgN00MCDDRM' AND crosscheck='disputed' LIMIT 10\"):
-    print(dict(r))"
+PY
 ```
 
-Expected: a `disputed` row where `normalized` is `2900000000` and
+Expected: among the disputed rows, one whose `normalized` is `2900000000` and
 `asr_normalized` is `29900000000`. **That is the acceptance test for this whole
-plan.** If it does not appear, stop and investigate before continuing.
+plan.** If it does not appear, stop and report rather than continuing.
+
+This downloads ~150 MB of audio and spends roughly 15-20 minutes of ASR on 29%
+of a 2h31m video. Expect it to be slow; that is the measured cost, not a fault.
 
 - [ ] **Step 8: Commit**
 
