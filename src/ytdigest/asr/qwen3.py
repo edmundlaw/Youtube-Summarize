@@ -61,11 +61,21 @@ class Qwen3ASRMLX:
         Callers should pass a list scoped to this video, not everything known.
         """
         if not chunks:
-            raise NotImplementedError(
+            # Marked permanent via the hint runner.py's generic handler reads
+            # (`getattr(exc, "error_class", RETRYABLE)`). Without it this is
+            # retryable, and 全職炒家's caption-less uploads -- about two a week
+            # -- would each re-run the stage three times before abandoning,
+            # re-paying the fetch every attempt. Nothing about a missing feature
+            # gets better on a retry.
+            from ..db import PERMANENT
+
+            exc = NotImplementedError(
                 "full-file transcription needs VAD chunking first: Qwen returns "
                 "one untimed segment for its whole input, so every figure would "
                 "land at t=0. See the ASR cross-check plan, 'Out of scope'."
             )
+            exc.error_class = PERMANENT
+            raise exc
 
         from ..voice import read_slice
 

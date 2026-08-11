@@ -77,3 +77,16 @@ def test_full_file_mode_is_refused_rather_than_faked(monkeypatch, tmp_path):
     eng = _engine(monkeypatch)
     with pytest.raises(NotImplementedError):
         eng.transcribe(tmp_path / "a.wav", [])
+
+
+def test_the_refusal_is_permanent_not_retryable(monkeypatch, tmp_path):
+    """runner's generic handler reads exc.error_class and defaults to retryable.
+    A missing feature does not become present on the third attempt, and each
+    retry re-pays the fetch stage for a channel that uploads twice a week.
+    """
+    from ytdigest.db import PERMANENT
+
+    eng = _engine(monkeypatch)
+    with pytest.raises(NotImplementedError) as caught:
+        eng.transcribe(tmp_path / "a.wav", [])
+    assert getattr(caught.value, "error_class", None) == PERMANENT
