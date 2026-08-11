@@ -244,9 +244,8 @@ _PATTERNS: list[tuple[str, str]] = [
     # round number and written to the ledger as authoritative.
     (COUNT, rf"[{_CN_QTY}]*[{_CN_D}][{_CN_QTY}]*{_MAG}[{_CN_QTY}]*"),
     (COUNT, rf"[\d.,]+\s*{_MAG}"),
-    # years: 2022年 / 二零二二年
+    # years: 2022年
     (YEAR, r"(?:19|20)\d{2}\s*年"),
-    (YEAR, rf"[{_CN_D}]{{4}}\s*年"),
     # Bare Arabic numbers, lowest priority so every unit-bearing pattern above
     # wins first. These carry most of the price levels an analyst actually
     # states — 26500, 450, 205 — so omitting them leaves the ledger blind to

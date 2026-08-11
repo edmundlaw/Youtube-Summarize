@@ -225,15 +225,6 @@ def test_compositional_numerals_are_unaffected():
     assert cn_to_number("五") == 5
 
 
-def test_spoken_years_are_years_not_quantities():
-    """二零二五年 must classify as YEAR like its Arabic twin, or is_financially
-    _meaningful lets a calendar year into the ledger as a figure."""
-    from ytdigest.numbers import YEAR, find_numbers
-
-    got = [f for f in find_numbers("到二零二五年為止") if f.unit == YEAR]
-    assert got and got[0].value == 2025
-
-
 def test_ordinary_prose_still_yields_no_bare_chinese_numbers():
     """一 and 十 are everywhere in speech. Only runs of three or more count."""
     from ytdigest.numbers import find_numbers
@@ -243,19 +234,32 @@ def test_ordinary_prose_still_yields_no_bare_chinese_numbers():
 
 def test_hesitation_never_becomes_a_figure():
     """Cantonese says adjacent digits to approximate -- 三四 is "three or four",
-    兩三 is "two or three" -- and speech repeats and stalls. A pattern matching
-    bare digit runs read 八九七七七七八 as 8,977,778 and 三四三兩三四 as 343,234
-    across the real corpus. Ledger entries are authoritative: a fabricated
-    summary figure that happened to match one would be published as verified.
+    兩三 is "two or three" -- and speech repeats and stalls. Two patterns were
+    tried here and both turned that into money.
 
-    Spoken tickers are therefore left out of the ledger and simply go unchecked,
-    which is the safe direction. Magnitude-bearing figures -- 二百九十九億 -- are
-    unaffected, and those are what actually carry money.
+    A bare digit-run pattern read 八九七七七七八 as 8,977,778 and 三四三兩三四 as
+    343,234 across the corpus. A spoken-year pattern looked safe because 年
+    bounds it, but its ONLY match in all 74 stored transcripts was 三四五六年 --
+    the year 3456, out of "可能係三三三四五六年咁樣". Restricted to real
+    centuries it then matched nothing at all, so it earned nothing and cost a
+    fabricated figure.
+
+    Ledger entries are authoritative: a summary that invented 343 or 3456 would
+    find it there and be published as verified. Spoken digit runs are therefore
+    left out entirely and simply go unchecked, which is the safe direction.
+    Magnitude-bearing figures -- 二百九十九億 -- are unaffected, and those are
+    what actually carry money.
     """
     from ytdigest.numbers import find_numbers
 
     for stutter in ("八九七七七七八", "三四三兩三四", "三四三", "七八九", "七八七八"):
         assert find_numbers(stutter) == [], f"{stutter} must not become a figure"
 
-    # The figure the whole cross-check exists to catch still parses.
+    # The real corpus string that produced the year 3456.
+    assert find_numbers("可能係三三三四五六年咁樣") == []
+
+    # Arabic years are unaffected -- that pattern predates this task.
+    assert any(f.unit == "year" and f.value == 2022 for f in find_numbers("2022年"))
+
+    # And the figure the whole cross-check exists to catch still parses.
     assert any(f.value == 29_900_000_000 for f in find_numbers("北水淨流入二百九十九億"))
