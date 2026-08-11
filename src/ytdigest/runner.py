@@ -238,7 +238,7 @@ def _crosscheck_figures(cfg: Config, conn, video: dict, wav) -> dict[str, int]:
     expensive part and it is already on disk. Sequentially, never alongside:
     ASR peaks at 5.2 GB on a machine that is already swapping.
     """
-    from .crosscheck import compare, spans_for, values_in
+    from .crosscheck import ABSENT, UNCHECKED, resolve_window, spans_for, values_in
     from .normalize import _fmt
 
     if not cfg.get("asr", "crosscheck", True) or wav is None:
@@ -262,26 +262,62 @@ def _crosscheck_figures(cfg: Config, conn, video: dict, wav) -> dict[str, int]:
         log.warning("crosscheck.failed", video_id=video["id"], error=str(exc)[:200])
         return {}
 
-    heard = [(s.start, s.end, values_in(s.text)) for s in segments]
+    heard_by_span = {(s.start, s.end): values_in(s.text) for s in segments}
+
+    # Group ledger rows by the merged span that covers their timestamp, and
+    # judge each span's figures together via resolve_window rather than one
+    # row against everything heard nearby. `spans_for` merges overlapping
+    # windows, so a dense passage becomes one span holding several unrelated
+    # figures -- comparing each in isolation let correct figures dispute
+    # against other sentences' numbers (measured: 25% precision on a dense
+    # passage in MgN00MCDDRM).
+    rows_by_span: dict[tuple[float, float], list] = {span: [] for span in spans}
+    uncovered = []
+    for row in rows:
+        for span in spans:
+            if span[0] <= row["start_s"] <= span[1]:
+                rows_by_span[span].append(row)
+                break
+        else:
+            uncovered.append(row)
+
     counts: dict[str, int] = {}
+
+    def _write(row, state, rival):
+        counts[state] = counts.get(state, 0) + 1
+        # _fmt, not repr: the ledger's own `normalized` is written by _fmt,
+        # which renders whole numbers as "2900000000". repr() would write
+        # "29900000000.0", and Task 7 compares the two as strings.
+        conn.execute(
+            "UPDATE number_ledger SET crosscheck=?, asr_normalized=?, asr_model=? "
+            "WHERE id=?",
+            (state, _fmt(rival), engine.id, row["id"]),
+        )
+
     with D.transaction(conn):
-        for row in rows:
-            near = [v for lo, hi, vals in heard
-                    if lo <= row["start_s"] <= hi for v in vals]
+        for span, span_rows in rows_by_span.items():
+            if not span_rows:
+                continue
+            captions = []
+            for row in span_rows:
+                try:
+                    captions.append(float(row["normalized"]) if row["normalized"] else None)
+                except (TypeError, ValueError):
+                    captions.append(None)
+            verdicts = resolve_window(captions, heard_by_span.get(span, []))
+            for row, (state, rival) in zip(span_rows, verdicts):
+                _write(row, state, rival)
+
+        # A row whose timestamp fell in no span at all (spans_for can drop a
+        # window that clamps to zero width at a video's edge) was never given
+        # to ASR, so it is unchecked/absent rather than judged.
+        for row in uncovered:
             try:
                 caption = float(row["normalized"]) if row["normalized"] else None
             except (TypeError, ValueError):
                 caption = None
-            state, rival = compare(caption, near)
-            counts[state] = counts.get(state, 0) + 1
-            # _fmt, not repr: the ledger's own `normalized` is written by _fmt,
-            # which renders whole numbers as "2900000000". repr() would write
-            # "29900000000.0", and Task 7 compares the two as strings.
-            conn.execute(
-                "UPDATE number_ledger SET crosscheck=?, asr_normalized=?, asr_model=? "
-                "WHERE id=?",
-                (state, _fmt(rival), engine.id, row["id"]),
-            )
+            _write(row, UNCHECKED if caption is None else ABSENT, None)
+
     log.info("crosscheck.done", video_id=video["id"], **counts)
     return counts
 

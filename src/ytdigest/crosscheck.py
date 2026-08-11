@@ -115,3 +115,58 @@ def compare(caption_value: float | None,
     if any(_same(caption_value, v) for v in asr_values):
         return AGREED, caption_value
     return DISPUTED, _nearest(caption_value, asr_values)
+
+
+#: Digit edits separating a caption reading from a plausible mishearing of it.
+#: 2900000000 vs 29900000000 is 1; 13 vs 30 is 2; an unrelated leftover such as
+#: 76 against 5600000000 is 9. Beyond this, the two are not the same figure and
+#: the caption's is simply one ASR did not hear.
+MAX_MISHEARING_EDITS = 2
+
+
+def resolve_window(caption_values: list[float | None],
+                   asr_values: list[float]) -> list[tuple[str, float | None]]:
+    """Judge every caption figure in one window together, not one at a time.
+
+    `spans_for` merges overlapping windows, so a dense passage becomes a single
+    span holding several unrelated figures. Comparing each caption figure against
+    everything heard anywhere in that span made correct figures dispute against
+    other people's numbers -- measured at 25% precision on MgN00MCDDRM 7470-7530s,
+    where 56億, 1.7倍 and 76% were all flagged against figures belonging to other
+    sentences.
+
+    So: an ASR reading may vouch for only one caption figure, and may dispute only
+    a figure it plausibly is. Anything left over is `absent` -- ASR did not hear
+    it, which is not evidence the caption is wrong.
+    """
+    pool = list(asr_values)
+    out: list[tuple[str, float | None]] = [None] * len(caption_values)
+
+    for i, caption in enumerate(caption_values):
+        if caption is None:
+            out[i] = (UNCHECKED, None)
+
+    # Exact agreement first, so a heard figure is claimed by the caption figure
+    # it actually corroborates before any dispute can consume it.
+    for i, caption in enumerate(caption_values):
+        if out[i] is not None:
+            continue
+        hit = next((v for v in pool if _same(caption, v)), None)
+        if hit is not None:
+            pool.remove(hit)
+            out[i] = (AGREED, caption)
+
+    for i, caption in enumerate(caption_values):
+        if out[i] is not None:
+            continue
+        if not pool:
+            out[i] = (ABSENT, None)
+            continue
+        rival = min(pool, key=lambda v: (_levenshtein(_digits(caption), _digits(v)),
+                                         abs(v - caption)))
+        if _levenshtein(_digits(caption), _digits(rival)) > MAX_MISHEARING_EDITS:
+            out[i] = (ABSENT, None)     # nothing here is a misreading of this
+            continue
+        pool.remove(rival)
+        out[i] = (DISPUTED, rival)
+    return out

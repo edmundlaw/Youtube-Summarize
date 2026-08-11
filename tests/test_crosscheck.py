@@ -146,3 +146,41 @@ def test_a_disabled_crosscheck_is_a_no_op(conn, tmp_path):
                          "data_dir": tmp_path})()
     assert runner._crosscheck_figures(cfg, conn, {"id": "v", "duration_s": 600},
                                       tmp_path / "v.wav") == {}
+
+
+def test_a_window_full_of_figures_does_not_flag_the_innocent_ones():
+    """MgN00MCDDRM 7470-7530s, measured. The merged span is 44 seconds and holds
+    four different companies' inflows. Judging each caption figure against
+    everything heard anywhere in it disputed 56億, 1.7倍 and 76% against numbers
+    from other sentences -- 25% precision, which would teach the reader to
+    ignore the marker entirely."""
+    from ytdigest.crosscheck import AGREED, ABSENT, DISPUTED, resolve_window
+
+    captions = [2_900_000_000, 5_600_000_000, 15_000_000_000, 38_100_000_000,
+                30_000_000_000, 5_600_000_000, 1.7, 76]
+    heard = [29_900_000_000, 15_000_000_000, 38_100_000_000, 30_000_000_000,
+             5_600_000_000]
+    got = resolve_window(captions, heard)
+
+    assert got[0] == (DISPUTED, 29_900_000_000)     # the real 10x error
+    assert [s for s, _ in got[1:5]] == [AGREED] * 4
+    assert [s for s, _ in got[5:]] == [ABSENT] * 3
+
+
+def test_an_unheard_figure_does_not_dispute_against_a_stranger():
+    """A leftover reading may only dispute a figure it plausibly IS. 76 against
+    5,600,000,000 is nine digit edits apart -- different figures, not a
+    mishearing."""
+    from ytdigest.crosscheck import ABSENT, DISPUTED, resolve_window
+
+    assert resolve_window([76], [5_600_000_000]) == [(ABSENT, None)]
+    assert resolve_window([13], [30]) == [(DISPUTED, 30)]
+
+
+def test_one_heard_reading_vouches_for_only_one_caption_figure():
+    """The speaker says 56億 twice; ASR caught it once. We can honestly vouch for
+    one of them."""
+    from ytdigest.crosscheck import AGREED, ABSENT, resolve_window
+
+    assert resolve_window([5_600_000_000, 5_600_000_000], [5_600_000_000]) == [
+        (AGREED, 5_600_000_000), (ABSENT, None)]
