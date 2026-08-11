@@ -214,6 +214,41 @@ def _identify_speakers(cfg: Config, conn, video: dict,
         return None
 
 
+def _wants_voice(cfg: Config, conn, video: dict) -> bool:
+    """Whether voice ID has any work left to do -- checked before downloading
+    audio, not after.
+
+    Mirrors `_identify_speakers`'s own early returns exactly (disabled,
+    already identified, no voiceprints enrolled) so the two cannot drift
+    silently apart. Every video is in this last state before its channel's
+    first enrolment, and it is the common case, not the exception.
+    """
+    if not cfg.get("voice", "enabled", True):
+        return False
+    try:
+        from .summarize import speaker_map
+        from .voice import voiceprints
+    except ImportError:
+        return False
+    if speaker_map(conn, video["id"]) is not None:   # already identified
+        return False
+    if not voiceprints(conn):                         # nobody enrolled yet
+        return False
+    return True
+
+
+def _wants_crosscheck(cfg: Config, conn, video: dict) -> bool:
+    """Whether the cross-check has any work left to do -- checked before
+    downloading audio, not after."""
+    if not cfg.get("asr", "crosscheck", True):
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM number_ledger WHERE video_id = ? AND start_s IS NOT NULL "
+        "LIMIT 1", (video["id"],),
+    ).fetchone()
+    return row is not None
+
+
 def _bias_terms(conn, video_id: str) -> str:
     """Qwen's context prompt, scoped to this video.
 
@@ -341,11 +376,21 @@ def stage_identify(cfg: Config, conn, video: dict) -> None:
     run strictly one after the other -- ASR alone peaks at 5.2 GB, so it must
     never run alongside voice identification's own model.
     """
-    if not cfg.get("voice", "enabled", True) and not cfg.get("asr", "crosscheck", True):
-        return None
     artifact = D.get_artifact(conn, video["id"], "normalized")
     if artifact is None:
         raise D.StageError("no normalized artifact", D.RETRYABLE)
+
+    # Deciding this before the download, not inside it: a 2.5-hour show is
+    # ~570 MB, and before the first voiceprint is enrolled `_identify_speakers`
+    # returns immediately -- so fetching the wav first and deciding afterwards
+    # downloaded half a gigabyte to throw it away on every video.
+    wants_voice = _wants_voice(cfg, conn, video)
+    wants_crosscheck = _wants_crosscheck(cfg, conn, video)
+    if not (wants_voice or wants_crosscheck):
+        log.info("audio_stage.skipped", video_id=video["id"],
+                 reason="neither voice ID nor cross-check has work to do")
+        return None
+
     segments = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))["segments"]
 
     from .voice import audio_for

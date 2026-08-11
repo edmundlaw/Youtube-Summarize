@@ -184,3 +184,54 @@ def test_one_heard_reading_vouches_for_only_one_caption_figure():
 
     assert resolve_window([5_600_000_000, 5_600_000_000], [5_600_000_000]) == [
         (AGREED, 5_600_000_000), (ABSENT, None)]
+
+
+def test_the_dispute_lands_on_the_likelier_mishearing():
+    """captions 13 and 31 both compete for a single heard 30. 31 is one digit
+    edit away and 13 is two, so 31 is what 30 most plausibly mis-hears. Greedy
+    caption-order assignment gave 30 to whichever appeared first in an unordered
+    SELECT -- so which figure carried the warning was arbitrary."""
+    from ytdigest.crosscheck import ABSENT, DISPUTED, resolve_window
+
+    assert resolve_window([13, 31], [30]) == [(ABSENT, None), (DISPUTED, 30)]
+    assert resolve_window([31, 13], [30]) == [(DISPUTED, 30), (ABSENT, None)]
+
+
+def test_no_wav_download_when_neither_voice_nor_crosscheck_has_work(conn, monkeypatch, tmp_path):
+    """Before a channel's first voiceprint is enrolled, `_identify_speakers`
+    returns immediately -- so with the cross-check also off, nothing should
+    ever open `audio_for`. Downloading anyway costs ~570 MB per video, thrown
+    away unused, on every single video before that first enrolment."""
+    import json
+
+    from ytdigest import runner
+    from ytdigest import voice
+
+    conn.execute("INSERT INTO channels (id, title, enabled, added_at) "
+                 "VALUES ('c', 'Channel', 1, '2026-01-01')")
+    conn.execute("INSERT INTO videos (id, channel_id, title, published_at, discovered_at, status) "
+                 "VALUES ('v','c','t','2026-01-01','2026-01-01','normalized')")
+    normalized_path = tmp_path / "v.json"
+    normalized_path.write_text(json.dumps({"segments": []}), encoding="utf-8")
+    conn.execute(
+        "INSERT INTO artifacts (video_id, kind, path, sha256, bytes, created_at) "
+        "VALUES ('v','normalized',?,?,?,?)",
+        (str(normalized_path), "x" * 8, normalized_path.stat().st_size, "2026-01-01"))
+    conn.commit()
+
+    def _boom(video_id, dest_dir):
+        raise AssertionError("audio_for should not be called")
+
+    monkeypatch.setattr(voice, "audio_for", _boom)
+
+    # voice.enabled=True (so _identify_speakers's own gate isn't what stops
+    # it -- the no-voiceprints early return is), asr.crosscheck=False.
+    def _get(self, section, key, default=None):
+        if (section, key) == ("voice", "enabled"):
+            return True
+        return False
+
+    cfg = type("C", (), {"get": _get, "data_dir": tmp_path})()
+
+    result = runner.stage_identify(cfg, conn, {"id": "v", "duration_s": 600})
+    assert result is None

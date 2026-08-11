@@ -156,17 +156,32 @@ def resolve_window(caption_values: list[float | None],
             pool.remove(hit)
             out[i] = (AGREED, caption)
 
-    for i, caption in enumerate(caption_values):
-        if out[i] is not None:
+    # Disputes are assigned best-match-first across the whole window, not in
+    # caption order. With captions [13, 31] and one heard 30, caption-order
+    # assignment let 13 (edit distance 2) claim 30 before 31 (distance 1, the
+    # actually-plausible misreading) was even considered -- so which figure
+    # carried the warning depended on the order an unordered SELECT happened
+    # to return rows in. Sorting every (caption, reading) pair by edit distance
+    # and assigning greedily smallest-first fixes the warning to whichever
+    # figure it best fits, regardless of row order.
+    pending = [i for i, v in enumerate(out) if v is None]
+    candidates = []
+    for i in pending:
+        caption_digits = _digits(caption_values[i])
+        for j, v in enumerate(pool):
+            edits = _levenshtein(caption_digits, _digits(v))
+            if edits <= MAX_MISHEARING_EDITS:
+                candidates.append((edits, i, j))
+    candidates.sort(key=lambda c: c[0])
+
+    claimed_pool: set[int] = set()
+    for edits, i, j in candidates:
+        if out[i] is not None or j in claimed_pool:
             continue
-        if not pool:
-            out[i] = (ABSENT, None)
-            continue
-        rival = min(pool, key=lambda v: (_levenshtein(_digits(caption), _digits(v)),
-                                         abs(v - caption)))
-        if _levenshtein(_digits(caption), _digits(rival)) > MAX_MISHEARING_EDITS:
-            out[i] = (ABSENT, None)     # nothing here is a misreading of this
-            continue
-        pool.remove(rival)
-        out[i] = (DISPUTED, rival)
+        claimed_pool.add(j)
+        out[i] = (DISPUTED, pool[j])
+
+    for i in pending:
+        if out[i] is None:
+            out[i] = (ABSENT, None)     # nothing plausible left in the pool
     return out
