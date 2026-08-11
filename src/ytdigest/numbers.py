@@ -55,6 +55,19 @@ MAGNITUDES: list[tuple[str, float]] = [
 ]
 
 
+def _digit_string(text: str) -> float | None:
+    """七零零 -> 700. Digits read out one at a time, which is how tickers and
+    some index levels are spoken, and how Qwen3-ASR renders both.
+
+    Runs of exactly two are refused: 兩三 / 三四 / 五六 are "two or three", an
+    approximation, and returning 23 would fabricate a figure. Three is the
+    shortest length at which a digit string is unambiguous in this corpus.
+    """
+    if len(text) < 3:
+        return None
+    return float("".join(str(_DIGITS[c]) for c in text))
+
+
 def cn_to_number(text: str) -> float | None:
     """Parse a Chinese numeral string. Returns None if unparseable.
 
@@ -64,6 +77,14 @@ def cn_to_number(text: str) -> float | None:
     text = text.strip()
     if not text or any(c not in _CN_NUM for c in text):
         return None
+
+    # A run of bare digits carries no magnitude word, so it is not
+    # compositional and the loop below cannot parse it -- that loop assigns
+    # each digit to `current`, so 九九八八 would fall out the bottom as 8.0.
+    # Returning the wrong number silently is the failure this project exists to
+    # prevent, so digit strings are handled here or refused.
+    if all(c in _DIGITS for c in text) and len(text) >= 2:
+        return _digit_string(text)
 
     total = 0.0
     section = 0.0

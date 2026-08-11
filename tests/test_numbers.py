@@ -189,3 +189,37 @@ def test_figures_do_not_span_flattened_fields():
     flat = _flatten({"numbers": [{"figure": "165", "context": ""}],
                      "theses": [{"thesis": "股份分析", "reasoning": ""}]})
     assert not [f for f in find_numbers(flat) if "\n" in f.raw]
+
+
+def test_spoken_digit_strings_are_not_read_as_their_last_digit():
+    """九九八八 is Alibaba's ticker 9988, spoken digit by digit. The
+    compositional parser overwrote its accumulator on each digit and returned
+    8.0 -- silently wrong, which is worse than refusing. Qwen3-ASR renders every
+    ticker this way, so without this the cross-check compares noise."""
+    from ytdigest.numbers import cn_to_number
+
+    assert cn_to_number("九九八八") == 9988
+    assert cn_to_number("七零零") == 700
+    assert cn_to_number("一三四七") == 1347
+    assert cn_to_number("九八一") == 981
+
+
+def test_two_digit_runs_are_refused_as_ambiguous():
+    """兩三 is "two or three" -- an approximation, not 23. Guessing here would
+    invent a figure, which is the one failure this project does not accept."""
+    from ytdigest.numbers import cn_to_number
+
+    assert cn_to_number("兩三") is None
+    assert cn_to_number("三四") is None
+    assert cn_to_number("五六") is None
+
+
+def test_compositional_numerals_are_unaffected():
+    """The forms that already worked must not regress: these carry every real
+    figure in the corpus."""
+    from ytdigest.numbers import cn_to_number
+
+    assert cn_to_number("二百九十九") == 299
+    assert cn_to_number("十三") == 13
+    assert cn_to_number("三萬五千") == 35000
+    assert cn_to_number("五") == 5
