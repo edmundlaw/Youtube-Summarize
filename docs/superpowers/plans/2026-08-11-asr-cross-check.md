@@ -826,6 +826,22 @@ def compare(caption_value: float | None,
     return DISPUTED, rival
 ```
 
+> **CORRECTION 2026-08-11: the `rival` line above is wrong and its own test
+> proves it.** For a caption reading of 29億 (2.9e9) against ASR readings of
+> 299億 (2.99e10) and 56億 (5.6e9), absolute distance picks **56億** — it is ten
+> times nearer in arithmetic terms — while
+> `test_the_real_disagreement_this_was_built_for` requires 299億.
+>
+> Arithmetic distance is the wrong metric because these are not additive errors.
+> A caption that drops a digit turns 299 into 29; the rival is one *digit edit*
+> away, not one *quantity* away. As implemented, selection uses Levenshtein
+> distance over the digit strings, which separates the flagship case (299 is one
+> insertion from 29; 56 is two substitutions) and agrees with arithmetic distance
+> on the simpler cases.
+>
+> The verdict is unaffected either way — `disputed` is `disputed` regardless of
+> which rival is shown. Only the hint in the digest changes.
+
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_crosscheck.py -v`
