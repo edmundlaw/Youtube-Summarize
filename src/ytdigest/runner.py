@@ -169,20 +169,24 @@ def _mean_confidence(segments) -> float | None:
 
 
 def _identify_speakers(cfg: Config, conn, video: dict,
-                       raw_segments: list) -> dict[float, str] | None:
+                       raw_segments: list, wav) -> dict[float, str] | None:
     """Voice-identify this video's segments, or return None if we cannot.
 
     Never fatal. Speaker identification improves a summary; it is not required
     to produce one, and a network failure or a machine without torch installed
     must not cost the summary itself. Returning None makes the prompt fall back
     to refusing all attribution, which is the safe direction.
+
+    `wav` is downloaded once by the caller and shared with the cross-check --
+    a 2.5-hour show is ~570 MB, and fetching it twice would double the cost of
+    this stage for no benefit.
     """
     if not cfg.get("voice", "enabled", True):
         return None
     try:
         from .summarize import speaker_map
         from .voice import (
-            DEFAULT_MARGIN, DEFAULT_THRESHOLD, audio_for, identify,
+            DEFAULT_MARGIN, DEFAULT_THRESHOLD, identify,
             store_attributions, voiceprints,
         )
     except ImportError:
@@ -196,12 +200,11 @@ def _identify_speakers(cfg: Config, conn, video: dict,
         return None
 
     try:
-        with audio_for(video["id"], cfg.data_dir / "audio") as wav:
-            rows = identify(
-                conn, wav, raw_segments,
-                float(cfg.get("voice", "threshold", DEFAULT_THRESHOLD)),
-                float(cfg.get("voice", "margin", DEFAULT_MARGIN)),
-            )
+        rows = identify(
+            conn, wav, raw_segments,
+            float(cfg.get("voice", "threshold", DEFAULT_THRESHOLD)),
+            float(cfg.get("voice", "margin", DEFAULT_MARGIN)),
+        )
         named = store_attributions(conn, video["id"], rows)
         log.info("voice.identified", video_id=video["id"],
                  attributed=named, segments=len(rows))
@@ -211,27 +214,112 @@ def _identify_speakers(cfg: Config, conn, video: dict,
         return None
 
 
-def stage_identify(cfg: Config, conn, video: dict) -> None:
-    """Voice-identify this video's segments. Its own stage, deliberately.
+def _bias_terms(conn, video_id: str) -> str:
+    """Qwen's context prompt, scoped to this video.
 
-    This ran inside `stage_summarize` at first, and that was wrong twice over.
-    It loads torch and embeds an hour of audio, so summarize went from minutes
-    to an average of eleven and a maximum of fifty-nine against a sixty-minute
-    timeout -- five videos died mid-stage as a result. And the architecture
-    already says why each stage is its own subprocess: heavy model memory is
-    not reliably returned to the OS within a process, which matters on a 16 GB
-    machine that is already swapping.
-
-    Never fatal. A video with no attribution still summarises; it just
-    attributes nobody, which is the safe direction.
+    Biasing is powerful and therefore dangerous: handed a global term list,
+    Whisper turned 資金流 into 紫金流 purely because 紫金礦業 was in it. So this
+    supplies the instruments this video actually mentions, not everything known.
     """
-    if not cfg.get("voice", "enabled", True):
+    from .views import load_instruments
+
+    names = [r["instrument_raw"] for r in conn.execute(
+        "SELECT DISTINCT instrument_raw FROM views WHERE video_id = ? "
+        "AND instrument_raw IS NOT NULL LIMIT 30", (video_id,))]
+    if not names:
+        names = list(load_instruments().keys())[:20]
+    return "以下是香港股評節目，涉及：" + "、".join(names) + "。"
+
+
+def _crosscheck_figures(cfg: Config, conn, video: dict, wav) -> dict[str, int]:
+    """Give every figure a second reading. Never fatal.
+
+    Runs after voice ID inside the same stage, sharing its wav -- audio is the
+    expensive part and it is already on disk. Sequentially, never alongside:
+    ASR peaks at 5.2 GB on a machine that is already swapping.
+    """
+    from .crosscheck import compare, spans_for, values_in
+    from .normalize import _fmt
+
+    if not cfg.get("asr", "crosscheck", True) or wav is None:
+        return {}
+    rows = list(conn.execute(
+        "SELECT id, normalized, start_s FROM number_ledger "
+        "WHERE video_id = ? AND start_s IS NOT NULL", (video["id"],)))
+    if not rows:
+        return {}
+
+    try:
+        engine = _load_asr(cfg)
+        spans = spans_for([r["start_s"] for r in rows],
+                          float(video.get("duration_s") or 0) or 1e9)
+        from .interfaces import SpeechRegion
+        segments = engine.transcribe(
+            Path(wav), [SpeechRegion(lo, hi) for lo, hi in spans],
+            lang_hint=None, context=_bias_terms(conn, video["id"]),
+        )
+    except Exception as exc:                    # noqa: BLE001 - never fatal
+        log.warning("crosscheck.failed", video_id=video["id"], error=str(exc)[:200])
+        return {}
+
+    heard = [(s.start, s.end, values_in(s.text)) for s in segments]
+    counts: dict[str, int] = {}
+    with D.transaction(conn):
+        for row in rows:
+            near = [v for lo, hi, vals in heard
+                    if lo <= row["start_s"] <= hi for v in vals]
+            try:
+                caption = float(row["normalized"]) if row["normalized"] else None
+            except (TypeError, ValueError):
+                caption = None
+            state, rival = compare(caption, near)
+            counts[state] = counts.get(state, 0) + 1
+            # _fmt, not repr: the ledger's own `normalized` is written by _fmt,
+            # which renders whole numbers as "2900000000". repr() would write
+            # "29900000000.0", and Task 7 compares the two as strings.
+            conn.execute(
+                "UPDATE number_ledger SET crosscheck=?, asr_normalized=?, asr_model=? "
+                "WHERE id=?",
+                (state, _fmt(rival), engine.id, row["id"]),
+            )
+    log.info("crosscheck.done", video_id=video["id"], **counts)
+    return counts
+
+
+def stage_identify(cfg: Config, conn, video: dict) -> None:
+    """Voice-identify this video's segments, then cross-check its figures.
+
+    Its own stage, deliberately. This ran inside `stage_summarize` at first,
+    and that was wrong twice over. It loads torch and embeds an hour of audio,
+    so summarize went from minutes to an average of eleven and a maximum of
+    fifty-nine against a sixty-minute timeout -- five videos died mid-stage as
+    a result. And the architecture already says why each stage is its own
+    subprocess: heavy model memory is not reliably returned to the OS within a
+    process, which matters on a 16 GB machine that is already swapping.
+
+    Both steps are never fatal. A video with no attribution still summarises;
+    it just attributes nobody, which is the safe direction. A video with no
+    cross-check still publishes; its figures are simply left unchecked.
+
+    The wav is downloaded once here and shared between the two steps, which
+    run strictly one after the other -- ASR alone peaks at 5.2 GB, so it must
+    never run alongside voice identification's own model.
+    """
+    if not cfg.get("voice", "enabled", True) and not cfg.get("asr", "crosscheck", True):
         return None
     artifact = D.get_artifact(conn, video["id"], "normalized")
     if artifact is None:
         raise D.StageError("no normalized artifact", D.RETRYABLE)
     segments = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))["segments"]
-    _identify_speakers(cfg, conn, video, segments)
+
+    from .voice import audio_for
+
+    try:
+        with audio_for(video["id"], cfg.data_dir / "audio") as wav:
+            _identify_speakers(cfg, conn, video, segments, wav=wav)
+            _crosscheck_figures(cfg, conn, video, wav)
+    except Exception as exc:                    # noqa: BLE001 - never fatal
+        log.warning("audio_stage.failed", video_id=video["id"], error=str(exc)[:200])
     return None
 
 

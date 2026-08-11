@@ -44,6 +44,7 @@ low_confidence     = 0.55
 prefer_manual_subs = true
 # Delete the wav after a successful transcribe.
 keep_audio         = false
+crosscheck = true       # second reading of every ledger figure; false disables
 
 [voice]
 # Speaker identification. Captions carry no speaker labels, so on a multi-host

@@ -93,3 +93,56 @@ def test_the_real_disagreement_this_was_built_for():
     heard = values_in("中芯國際北水淨流入二百九十九億。華虹宏力淨流入五十六億。")
     assert 29_900_000_000 in heard
     assert compare(2_900_000_000, heard) == (DISPUTED, 29_900_000_000)
+
+
+def test_a_dead_asr_leaves_rows_unchecked_and_never_raises(conn, monkeypatch, tmp_path):
+    """A safety feature that takes the pipeline down is a worse bug than the one
+    it fixes. Every failure path must end with the video still publishable.
+
+    `wav` must be a real path, not None: None short-circuits before the engine is
+    ever loaded, so the test would pass without exercising the failure at all.
+    """
+    from ytdigest import runner
+
+    conn.execute("INSERT INTO channels (id, title, enabled, added_at) "
+                 "VALUES ('c', 'Channel', 1, '2026-01-01')")
+    conn.execute("INSERT INTO videos (id, channel_id, title, published_at, discovered_at, status) "
+                 "VALUES ('v','c','t','2026-01-01','2026-01-01','normalized')")
+    conn.execute("INSERT INTO number_ledger (video_id, raw_text, normalized, unit, segment_id, start_s, context) "
+                 "VALUES ('v','29億','2900000000','hkd',1,100.0,'')")
+    conn.commit()
+
+    loaded = []
+
+    def _boom(cfg):
+        loaded.append(True)
+        raise RuntimeError("no mlx on this machine")
+
+    monkeypatch.setattr(runner, "_load_asr", _boom)
+    cfg = type("C", (), {"get": lambda self, s, k, d=None: d,
+                         "data_dir": tmp_path})()
+    wav = tmp_path / "v.wav"
+    wav.write_bytes(b"")
+    counts = runner._crosscheck_figures(cfg, conn, {"id": "v", "duration_s": 600}, wav)
+
+    assert loaded, "engine was never loaded — the failure path was not exercised"
+    assert counts == {}
+    assert conn.execute("SELECT crosscheck FROM number_ledger").fetchone()[0] is None
+
+
+def test_a_disabled_crosscheck_is_a_no_op(conn, tmp_path):
+    """The config switch must skip the work without touching any row."""
+    from ytdigest import runner
+
+    conn.execute("INSERT INTO channels (id, title, enabled, added_at) "
+                 "VALUES ('c', 'Channel', 1, '2026-01-01')")
+    conn.execute("INSERT INTO videos (id, channel_id, title, published_at, discovered_at, status) "
+                 "VALUES ('v','c','t','2026-01-01','2026-01-01','normalized')")
+    conn.execute("INSERT INTO number_ledger (video_id, raw_text, normalized, unit, segment_id, start_s, context) "
+                 "VALUES ('v','29億','2900000000','hkd',1,100.0,'')")
+    conn.commit()
+
+    cfg = type("C", (), {"get": lambda self, s, k, d=None: False,
+                         "data_dir": tmp_path})()
+    assert runner._crosscheck_figures(cfg, conn, {"id": "v", "duration_s": 600},
+                                      tmp_path / "v.wav") == {}
