@@ -20,10 +20,9 @@ dependencies = [
 # Kept separate so `ytdigest status` / `doctor` work on a machine without MLX.
 asr = [
     "mlx>=0.21",
-    "mlx-lm>=0.20",
+    "mlx-audio>=0.2",     # provides Qwen3-ASR; mlx-lm alone cannot load it
     "numpy>=1.26",
     "soundfile>=0.12",
-    "onnxruntime>=1.19",  # silero-vad
 ]
 # Speaker identification. Captions have no diarization, so on a multi-host show
 # every name in a summary was a guess without this. Kept optional because it
