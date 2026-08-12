@@ -239,12 +239,21 @@ def _wants_voice(cfg: Config, conn, video: dict) -> bool:
 
 def _wants_crosscheck(cfg: Config, conn, video: dict) -> bool:
     """Whether the cross-check has any work left to do -- checked before
-    downloading audio, not after."""
+    downloading audio, not after.
+
+    Unlike `_wants_voice`, which checks whether identification already ran,
+    this used to want the work whenever any ledger row simply had a
+    `start_s`, checked or not -- so every re-run of `stage_identify` on an
+    already-judged video re-downloaded ~570 MB and re-paid 10+ minutes of ASR
+    on rows that already carried a verdict. `crosscheck IS NULL` is the
+    actual "still has work" signal: it is unset only for rows never given a
+    second reading.
+    """
     if not cfg.get("asr", "crosscheck", True):
         return False
     row = conn.execute(
         "SELECT 1 FROM number_ledger WHERE video_id = ? AND start_s IS NOT NULL "
-        "LIMIT 1", (video["id"],),
+        "AND crosscheck IS NULL LIMIT 1", (video["id"],),
     ).fetchone()
     return row is not None
 

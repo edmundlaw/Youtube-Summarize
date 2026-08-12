@@ -197,6 +197,43 @@ def test_the_dispute_lands_on_the_likelier_mishearing():
     assert resolve_window([31, 13], [30]) == [(DISPUTED, 30), (ABSENT, None)]
 
 
+def test_wants_crosscheck_is_false_once_every_row_is_judged(conn):
+    """Unlike `_wants_voice`, which checks whether identification already ran,
+    `_wants_crosscheck` used to want the work whenever any row simply had a
+    `start_s`, checked or not -- so every re-run of `stage_identify` on an
+    already-judged video re-downloaded ~570 MB and re-paid 10+ minutes of ASR
+    on rows that already carried a verdict."""
+    from ytdigest import runner
+
+    conn.execute("INSERT INTO channels (id, title, enabled, added_at) "
+                 "VALUES ('c', 'Channel', 1, '2026-01-01')")
+    conn.execute("INSERT INTO videos (id, channel_id, title, published_at, discovered_at, status) "
+                 "VALUES ('v','c','t','2026-01-01','2026-01-01','normalized')")
+    conn.execute(
+        "INSERT INTO number_ledger (video_id, raw_text, normalized, unit, segment_id, "
+        "start_s, context, crosscheck) VALUES ('v','29億','2900000000','hkd',1,100.0,'','agreed')")
+    conn.commit()
+
+    cfg = type("C", (), {"get": lambda self, s, k, d=None: True})()
+    assert runner._wants_crosscheck(cfg, conn, {"id": "v"}) is False
+
+
+def test_wants_crosscheck_is_true_while_a_row_is_still_unjudged(conn):
+    from ytdigest import runner
+
+    conn.execute("INSERT INTO channels (id, title, enabled, added_at) "
+                 "VALUES ('c', 'Channel', 1, '2026-01-01')")
+    conn.execute("INSERT INTO videos (id, channel_id, title, published_at, discovered_at, status) "
+                 "VALUES ('v','c','t','2026-01-01','2026-01-01','normalized')")
+    conn.execute(
+        "INSERT INTO number_ledger (video_id, raw_text, normalized, unit, segment_id, "
+        "start_s, context) VALUES ('v','29億','2900000000','hkd',1,100.0,'')")
+    conn.commit()
+
+    cfg = type("C", (), {"get": lambda self, s, k, d=None: True})()
+    assert runner._wants_crosscheck(cfg, conn, {"id": "v"}) is True
+
+
 def test_no_wav_download_when_neither_voice_nor_crosscheck_has_work(conn, monkeypatch, tmp_path):
     """Before a channel's first voiceprint is enrolled, `_identify_speakers`
     returns immediately -- so with the cross-check also off, nothing should
