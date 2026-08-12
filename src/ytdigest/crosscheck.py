@@ -83,44 +83,18 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-def _nearest(caption_value: float, asr_values: list[float]) -> float:
-    """The rival reading most likely to be the *same* figure misheard.
-
-    Raw numeric distance is the wrong ruler here: on the case this module was
-    built for (MgN00MCDDRM @7483s), captions hold 2,900,000,000 (29億) and ASR
-    offers both 29,900,000,000 (299億, the true misreading -- one inserted
-    digit away) and 5,600,000,000 (56億, an unrelated figure for a different
-    stock mentioned in the same breath). By absolute value 56億 is ten times
-    closer, yet it is two digits away by substitution while 299億 is one
-    digit away by insertion. ASR errors are digit-level, not additive noise,
-    so digit edit-distance -- not arithmetic distance -- is what separates
-    "the same number misheard" from "a different number that happens to sit
-    nearby."
-    """
-    caption_digits = _digits(caption_value)
-    return min(asr_values, key=lambda v: _levenshtein(caption_digits, _digits(v)))
-
-
-def compare(caption_value: float | None,
-            asr_values: list[float]) -> tuple[str, float | None]:
-    """One figure against everything ASR heard near it.
-
-    Returns the verdict and, when disputed, the nearest rival reading -- the
-    digest shows both, and the closest one is the one worth showing.
-    """
-    if caption_value is None:
-        return UNCHECKED, None          # nothing to compare against
-    if not asr_values:
-        return ABSENT, None             # silence is not disagreement
-    if any(_same(caption_value, v) for v in asr_values):
-        return AGREED, caption_value
-    return DISPUTED, _nearest(caption_value, asr_values)
-
-
 #: Digit edits separating a caption reading from a plausible mishearing of it.
 #: 2900000000 vs 29900000000 is 1; 13 vs 30 is 2; an unrelated leftover such as
 #: 76 against 5600000000 is 9. Beyond this, the two are not the same figure and
 #: the caption's is simply one ASR did not hear.
+#:
+#: Digit edit-distance, not arithmetic distance, is the right ruler: on the
+#: case this module was built for (MgN00MCDDRM @7483s), captions hold
+#: 2,900,000,000 (29億) against a window that also heard 5,600,000,000 (56億,
+#: an unrelated stock mentioned in the same breath). By absolute value 56億 is
+#: ten times closer, yet it is two digit-substitutions away while the true
+#: misreading, 29,900,000,000 (299億), is one digit-insertion away. ASR errors
+#: are digit-level, not additive noise.
 MAX_MISHEARING_EDITS = 2
 
 

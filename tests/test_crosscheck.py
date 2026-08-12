@@ -49,50 +49,55 @@ def test_spans_never_run_past_either_end():
 
 
 def test_agreement_needs_the_same_value():
-    from ytdigest.crosscheck import AGREED, DISPUTED, compare
+    """`compare`/`_nearest` were dead in production -- `resolve_window`
+    superseded both -- and `compare` lacked the `MAX_MISHEARING_EDITS` gate,
+    so keeping it around risked a future caller re-inheriting the 25%-
+    precision defect that gate fixed. Deleted; these regressions now exercise
+    `resolve_window` directly, one caption at a time."""
+    from ytdigest.crosscheck import AGREED, DISPUTED, resolve_window
 
-    assert compare(13.0, [13.0]) == (AGREED, 13.0)
-    assert compare(13.0, [30.0, 56.0])[0] == DISPUTED
+    assert resolve_window([13.0], [13.0]) == [(AGREED, 13.0)]
+    assert resolve_window([13.0], [30.0, 56.0])[0][0] == DISPUTED
 
 
 def test_the_reported_rival_is_the_nearest_one():
     """The digest shows both readings, so it should show the closest competing
     one rather than an unrelated figure from elsewhere in the window."""
-    from ytdigest.crosscheck import DISPUTED, compare
+    from ytdigest.crosscheck import DISPUTED, resolve_window
 
-    assert compare(13.0, [900.0, 30.0]) == (DISPUTED, 30.0)
+    assert resolve_window([13.0], [900.0, 30.0]) == [(DISPUTED, 30.0)]
 
 
 def test_hearing_no_number_is_absent_not_disputed():
     """Silence, cross-talk or a muffled passage is not evidence the caption is
     wrong. Treating it as disagreement would flag a large share of figures on
     day one and train the reader to ignore the marker."""
-    from ytdigest.crosscheck import ABSENT, compare
+    from ytdigest.crosscheck import ABSENT, resolve_window
 
-    assert compare(13.0, []) == (ABSENT, None)
+    assert resolve_window([13.0], []) == [(ABSENT, None)]
 
 
 def test_a_caption_figure_that_never_parsed_cannot_be_judged():
-    from ytdigest.crosscheck import UNCHECKED, compare
+    from ytdigest.crosscheck import UNCHECKED, resolve_window
 
-    assert compare(None, [13.0]) == (UNCHECKED, None)
+    assert resolve_window([None], [13.0]) == [(UNCHECKED, None)]
 
 
 def test_rounding_noise_is_not_a_dispute():
     """29.9億 written 2990000000.0 against 2990000000 is the same number."""
-    from ytdigest.crosscheck import AGREED, compare
+    from ytdigest.crosscheck import AGREED, resolve_window
 
-    assert compare(2_990_000_000.0, [2_990_000_000.0000001])[0] == AGREED
+    assert resolve_window([2_990_000_000.0], [2_990_000_000.0000001])[0][0] == AGREED
 
 
 def test_the_real_disagreement_this_was_built_for():
     """MgN00MCDDRM @7483s. Captions 29億, both ASR models 299億, and the
     surrounding figures only make sense at ~300億."""
-    from ytdigest.crosscheck import DISPUTED, compare, values_in
+    from ytdigest.crosscheck import DISPUTED, resolve_window, values_in
 
     heard = values_in("中芯國際北水淨流入二百九十九億。華虹宏力淨流入五十六億。")
     assert 29_900_000_000 in heard
-    assert compare(2_900_000_000, heard) == (DISPUTED, 29_900_000_000)
+    assert resolve_window([2_900_000_000], heard) == [(DISPUTED, 29_900_000_000)]
 
 
 def test_a_dead_asr_leaves_rows_unchecked_and_never_raises(conn, monkeypatch, tmp_path):
