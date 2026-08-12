@@ -31,7 +31,8 @@ backfill_days = 7
 
 [asr]
 engine    = "qwen3"                                  # qwen3 | whisper | subtitles
-model_id  = "mlx-community/Qwen3-ASR-1.7B-8bit"
+model_id  = "mlx-community/Qwen3-ASR-1.7B-bf16"   # the -8bit id does not exist
+repetition_penalty = 1.1                          # Qwen degenerates without it
 # Chunking (ARCHITECTURE §8)
 chunk_target_s     = 25.0
 chunk_max_s        = 30.0
@@ -43,6 +44,7 @@ low_confidence     = 0.55
 prefer_manual_subs = true
 # Delete the wav after a successful transcribe.
 keep_audio         = false
+crosscheck = true       # second reading of every ledger figure; false disables
 
 [voice]
 # Speaker identification. Captions carry no speaker labels, so on a multi-host

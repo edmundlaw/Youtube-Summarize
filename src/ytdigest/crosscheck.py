@@ -1,0 +1,161 @@
+"""Compare the ledger's figures against a second reading from our own ASR.
+
+The validator cannot catch a mis-heard number: it checks a summary against a
+ledger built from the same transcript, so both sides are wrong together and the
+figure passes. Measured across the corpus, 中芯 appears 0 times and 中心 288 --
+and on MgN00MCDDRM the captions put SMIC's northbound inflow at 29億 while two
+independent ASR models hear 299億.
+
+Nothing here resolves a disagreement. A disputed figure is refused, never
+overwritten: ASR is not ground truth either, and replacing one unverified
+number with another would assert something no one checked.
+"""
+
+from __future__ import annotations
+
+from .numbers import find_numbers, is_financially_meaningful
+
+AGREED = "agreed"
+DISPUTED = "disputed"
+ABSENT = "absent"
+UNCHECKED = "unchecked"
+
+#: Seconds either side of a figure. Merged windows of this size cover 29% of
+#: corpus audio, against 100% for a full second transcript.
+WINDOW_S = 8.0
+
+#: Relative tolerance. Wide enough to absorb float formatting, far too tight to
+#: let 29億 pass as 299億.
+_TOLERANCE = 1e-6
+
+
+def spans_for(starts: list[float], duration_s: float,
+              window_s: float = WINDOW_S) -> list[tuple[float, float]]:
+    """Merged, clamped windows around each figure.
+
+    Figures cluster -- an analyst reads six numbers off one chart -- so
+    unmerged windows would transcribe the same seconds repeatedly.
+    """
+    spans: list[tuple[float, float]] = []
+    for start in sorted(s for s in starts if s is not None):
+        lo = max(0.0, start - window_s)
+        hi = min(duration_s, start + window_s)
+        if hi <= lo:
+            continue
+        if spans and lo <= spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], hi))
+        else:
+            spans.append((lo, hi))
+    return spans
+
+
+def values_in(text: str) -> list[float]:
+    """Every financially meaningful figure ASR heard in one span."""
+    return [
+        f.value for f in find_numbers(text)
+        if f.value is not None and is_financially_meaningful(f.unit)
+    ]
+
+
+def _same(a: float, b: float) -> bool:
+    if a == b:
+        return True
+    scale = max(abs(a), abs(b))
+    return scale > 0 and abs(a - b) / scale <= _TOLERANCE
+
+
+def _digits(v: float) -> str:
+    """Bare digit string for edit-distance comparison, e.g. 2_900_000_000 ->
+    "2900000000". Fixed-point, never scientific notation, so magnitude is not
+    lost for the billion-scale figures this module exists to check."""
+    return f"{abs(round(v)):.0f}"
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Single-digit insertions/deletions/substitutions separating two strings."""
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+        prev = cur
+    return prev[-1]
+
+
+#: Digit edits separating a caption reading from a plausible mishearing of it.
+#: 2900000000 vs 29900000000 is 1; 13 vs 30 is 2; an unrelated leftover such as
+#: 76 against 5600000000 is 9. Beyond this, the two are not the same figure and
+#: the caption's is simply one ASR did not hear.
+#:
+#: Digit edit-distance, not arithmetic distance, is the right ruler: on the
+#: case this module was built for (MgN00MCDDRM @7483s), captions hold
+#: 2,900,000,000 (29億) against a window that also heard 5,600,000,000 (56億,
+#: an unrelated stock mentioned in the same breath). By absolute value 56億 is
+#: ten times closer, yet it is two digit-substitutions away while the true
+#: misreading, 29,900,000,000 (299億), is one digit-insertion away. ASR errors
+#: are digit-level, not additive noise.
+MAX_MISHEARING_EDITS = 2
+
+
+def resolve_window(caption_values: list[float | None],
+                   asr_values: list[float]) -> list[tuple[str, float | None]]:
+    """Judge every caption figure in one window together, not one at a time.
+
+    `spans_for` merges overlapping windows, so a dense passage becomes a single
+    span holding several unrelated figures. Comparing each caption figure against
+    everything heard anywhere in that span made correct figures dispute against
+    other people's numbers -- measured at 25% precision on MgN00MCDDRM 7470-7530s,
+    where 56億, 1.7倍 and 76% were all flagged against figures belonging to other
+    sentences.
+
+    So: an ASR reading may vouch for only one caption figure, and may dispute only
+    a figure it plausibly is. Anything left over is `absent` -- ASR did not hear
+    it, which is not evidence the caption is wrong.
+    """
+    pool = list(asr_values)
+    out: list[tuple[str, float | None]] = [None] * len(caption_values)
+
+    for i, caption in enumerate(caption_values):
+        if caption is None:
+            out[i] = (UNCHECKED, None)
+
+    # Exact agreement first, so a heard figure is claimed by the caption figure
+    # it actually corroborates before any dispute can consume it.
+    for i, caption in enumerate(caption_values):
+        if out[i] is not None:
+            continue
+        hit = next((v for v in pool if _same(caption, v)), None)
+        if hit is not None:
+            pool.remove(hit)
+            out[i] = (AGREED, caption)
+
+    # Disputes are assigned best-match-first across the whole window, not in
+    # caption order. With captions [13, 31] and one heard 30, caption-order
+    # assignment let 13 (edit distance 2) claim 30 before 31 (distance 1, the
+    # actually-plausible misreading) was even considered -- so which figure
+    # carried the warning depended on the order an unordered SELECT happened
+    # to return rows in. Sorting every (caption, reading) pair by edit distance
+    # and assigning greedily smallest-first fixes the warning to whichever
+    # figure it best fits, regardless of row order.
+    pending = [i for i, v in enumerate(out) if v is None]
+    candidates = []
+    for i in pending:
+        caption_digits = _digits(caption_values[i])
+        for j, v in enumerate(pool):
+            edits = _levenshtein(caption_digits, _digits(v))
+            if edits <= MAX_MISHEARING_EDITS:
+                candidates.append((edits, i, j))
+    candidates.sort(key=lambda c: c[0])
+
+    claimed_pool: set[int] = set()
+    for edits, i, j in candidates:
+        if out[i] is not None or j in claimed_pool:
+            continue
+        claimed_pool.add(j)
+        out[i] = (DISPUTED, pool[j])
+
+    for i in pending:
+        if out[i] is None:
+            out[i] = (ABSENT, None)     # nothing plausible left in the pool
+    return out

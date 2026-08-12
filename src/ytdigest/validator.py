@@ -74,8 +74,20 @@ def check_text(
     text: str,
     ledger: list[LedgerEntry],
     low_confidence: float = 0.55,
+    disputed: dict[str, str] | None = None,
 ) -> list[Check]:
-    """Validate every numeric mention in `text` against the ledger."""
+    """Validate every numeric mention in `text` against the ledger.
+
+    `disputed` maps a ledger `normalized` value to a rival reading from a
+    second, independent transcription (see `crosscheck.py`). It is a
+    best-effort hint, not a confident second opinion — the rival value comes
+    from a merged multi-second window that can hold several unrelated
+    figures, and pairing a ledger row to it is a heuristic. So a disputed
+    match is never treated as proof either side is wrong; it only means the
+    ledger — built from the same captions the summary was checked against —
+    cannot vouch for this figure on its own, and both readings are surfaced
+    for a human to resolve.
+    """
     checks: list[Check] = []
     for hit in find_numbers(text):
         # Clock times and moving-average labels are numerals, not claims. The
@@ -89,6 +101,23 @@ def check_text(
         ]
         if exact:
             best = exact[0]
+
+            # A figure our own ASR heard differently is not verified,
+            # whatever the ledger says -- the ledger and the summary were
+            # both built from the same transcript, so their agreeing with
+            # each other proves nothing about what was actually said.
+            rival = (disputed or {}).get(best.normalized)
+            if rival is not None:
+                checks.append(
+                    Check(
+                        figure=hit.raw, unit=hit.unit, value=hit.value,
+                        verdict="flagged",
+                        reason=f"字幕係 {best.normalized}，我哋自己聽係 {rival}",
+                        ledger_start_s=best.start_s, confidence=best.confidence,
+                    )
+                )
+                continue
+
             low = best.confidence is not None and best.confidence < low_confidence
             checks.append(
                 Check(

@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .config import REPO_ROOT
+from .crosscheck import DISPUTED
 from .db import now_iso, transaction
 from .normalize import to_hk_traditional
 from .numbers import find_numbers
@@ -267,12 +268,21 @@ def verify_level(conn, video_id: str, value: float | None, unit: str | None):
     summary validator uses, kept deliberately parallel so the two cannot drift.
     A level that does not verify is still stored; it is simply excluded from a
     backtest by `level_verified = 0`.
+
+    A ledger row our own ASR disputes cannot back a verification either,
+    exactly as `validator.check_text` refuses to call such a figure `ok` — a
+    stored view's level is a real person's track record, and letting a
+    disputed row verify it would score that record on a number nobody
+    actually confirmed. Rows that are `agreed`, `absent`, or never checked
+    (`crosscheck IS NULL`) are unaffected; NULL means "no second reading was
+    taken", not "disputed", and most rows are still in that state.
     """
     if value is None:
         return None, False
     allowed = _LEDGER_FOR.get(unit, {unit, "count"} if unit else {"count"})
     rows = list(conn.execute(
-        "SELECT id, unit, normalized FROM number_ledger WHERE video_id = ?", (video_id,)
+        "SELECT id, unit, normalized, crosscheck FROM number_ledger WHERE video_id = ?",
+        (video_id,),
     ))
     fallback = None
     for row in rows:
@@ -281,6 +291,8 @@ def verify_level(conn, video_id: str, value: float | None, unit: str | None):
         except (TypeError, ValueError):
             continue
         if stored != value:
+            continue
+        if row["crosscheck"] == DISPUTED:
             continue
         if row["unit"] in allowed:
             return row["id"], True

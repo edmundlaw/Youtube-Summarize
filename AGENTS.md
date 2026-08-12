@@ -100,10 +100,41 @@ Two things follow for anyone touching this area:
 
 - **Do not cite the verified rate as evidence of transcript quality.** It is
   blind by construction.
-- **`numbers.py` silently corrupts spoken digit strings.** 九九八八 → `8.0`,
-  一三四七 → `7.0`, 九八一 → `1.0` — it returns the last digit rather than
-  failing. Compound forms (二百九十九億, 五十六億) are fine. This must be fixed
-  before any ASR that speaks tickers aloud feeds the ledger.
+- **`numbers.py` refuses bare digit runs (九九八八, 一三四七, 九八一) outright —
+  it returns `None`, not a parsed value.** It used to parse them (九九八八 →
+  `9988`), on the theory that ASR speaks tickers digit-by-digit. But nothing
+  in `_PATTERNS` still hands it real ticker text — those entries were removed
+  because on this corpus a bare digit run overwhelmingly matches Cantonese
+  hesitation and approximation, a speaker trailing off mid-price, not a
+  ticker. What still reaches the parser is that hesitation flowing through
+  unit-bearing patterns (股/蚊/成/厘): 二七八蚊 parsed to a clean, fabricated
+  278.0 HKD. Refusing is the only safe choice left — a missing figure costs
+  nothing, a confidently wrong one is exactly what this project exists to
+  prevent. Compound forms (二百九十九億, 五十六億) are unaffected; they are
+  what actually carry money.
+
+Since 2026-08-11 the audio stage gives every ledger figure a second reading
+from Qwen3-ASR and records `agreed` / `disputed` / `absent` / `unchecked` on
+`number_ledger`. A disputed figure returns `flagged`, so the validator refuses
+it and the digest marks it with both readings, worded as a disagreement to go
+listen to — never as which one is right. **`crosscheck IS NULL` means never
+checked and must never be read as agreement** — every row written before that
+date is null. Expect more flags than before: it is the first time anything
+could tell.
+
+Measured on a full run of `MgN00MCDDRM` (2h31m, 350 ledger figures): 78
+agreed, 246 absent, 26 disputed. The catch this exists for: captions read 北水
+淨流入29億 (2900000000) where our own ASR hears 299億 (29900000000) — the same
+mismatch documented above, now caught automatically instead of silently
+verifying against itself. Two more disputes in the same passage share that
+shape, a dropped leading digit: 54億 vs 544億, and 28億 vs 238億.
+
+Precision is not yet tuned: of the 26 disputes, roughly 6 look spurious — short
+figures such as 8 vs 188, 10 vs 1400 — because `spans_for` can merge windows
+up to 44 seconds wide, and a wide span holds more than one unrelated number
+for the pairing heuristic to latch onto. A disputed figure is a prompt to go
+check both readings against the source, not a verdict on which one is
+wrong.
 
 ## Findings that constrain the design
 

@@ -65,6 +65,23 @@ def cn_to_number(text: str) -> float | None:
     if not text or any(c not in _CN_NUM for c in text):
         return None
 
+    # A run of bare digits carries no magnitude word, so it is not
+    # compositional and the loop below cannot parse it -- that loop assigns
+    # each digit to `current`, so 九九八八 would fall out the bottom as 8.0,
+    # the LAST digit, silently. This function used to parse the run instead
+    # (七零零 -> 700, reading digits one at a time as a ticker would be
+    # spoken). That was itself wrong: the only patterns that fed it real
+    # ticker text were later removed from _PATTERNS, because on this corpus
+    # a bare digit run overwhelmingly matches Cantonese hesitation and
+    # approximation -- a speaker trailing off mid-price -- not a ticker. What
+    # still reaches this function is hesitation flowing through the
+    # unit-bearing patterns (股/蚊/成/厘), e.g. "二七八蚊" parsing to a clean
+    # 278.0 HKD. Refusing outright, rather than parsing accurately, is the
+    # only safe choice left: a `None` value comes back `missing` from the
+    # validator rather than a confident, fabricated figure.
+    if all(c in _DIGITS for c in text) and len(text) >= 2:
+        return None
+
     total = 0.0
     section = 0.0
     current = 0.0
@@ -223,7 +240,7 @@ _PATTERNS: list[tuple[str, str]] = [
     # round number and written to the ledger as authoritative.
     (COUNT, rf"[{_CN_QTY}]*[{_CN_D}][{_CN_QTY}]*{_MAG}[{_CN_QTY}]*"),
     (COUNT, rf"[\d.,]+\s*{_MAG}"),
-    # years: 2022年 / 二零二二年
+    # years: 2022年
     (YEAR, r"(?:19|20)\d{2}\s*年"),
     # Bare Arabic numbers, lowest priority so every unit-bearing pattern above
     # wins first. These carry most of the price levels an analyst actually

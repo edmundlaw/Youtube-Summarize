@@ -189,3 +189,88 @@ def test_figures_do_not_span_flattened_fields():
     flat = _flatten({"numbers": [{"figure": "165", "context": ""}],
                      "theses": [{"thesis": "股份分析", "reasoning": ""}]})
     assert not [f for f in find_numbers(flat) if "\n" in f.raw]
+
+
+def test_spoken_digit_strings_are_refused_not_parsed():
+    """A prior task made cn_to_number parse bare digit runs (九九八八 -> 9988)
+    instead of returning the compositional parser's silently-wrong last digit
+    (8.0). That was itself an overcorrection: a later task found that on the
+    real corpus, the _PATTERNS entries feeding bare digit runs here matched
+    Cantonese hesitation and approximation, not tickers, and removed them --
+    so nothing in production hands this function a real ticker any more. What
+    still arrives is hesitation flowing through unit-bearing patterns
+    (二七八蚊, 七八九成), which parsing would turn into a confident, wrong
+    ledger value. Refusing -- returning None -- is the fix: a missing figure
+    is safe, a fabricated one is not."""
+    from ytdigest.numbers import cn_to_number
+
+    assert cn_to_number("九九八八") is None
+    assert cn_to_number("七零零") is None
+    assert cn_to_number("一三四七") is None
+    assert cn_to_number("九八一") is None
+
+
+def test_two_digit_runs_are_refused_as_ambiguous():
+    """兩三 is "two or three" -- an approximation, not 23. Guessing here would
+    invent a figure, which is the one failure this project does not accept."""
+    from ytdigest.numbers import cn_to_number
+
+    assert cn_to_number("兩三") is None
+    assert cn_to_number("三四") is None
+    assert cn_to_number("五六") is None
+
+
+def test_compositional_numerals_are_unaffected():
+    """The forms that already worked must not regress: these carry every real
+    figure in the corpus."""
+    from ytdigest.numbers import cn_to_number
+
+    assert cn_to_number("二百九十九") == 299
+    assert cn_to_number("十三") == 13
+    assert cn_to_number("三萬五千") == 35000
+    assert cn_to_number("五") == 5
+
+
+def test_ordinary_prose_still_yields_no_bare_chinese_numbers():
+    """一 and 十 are everywhere in speech. Only runs of three or more count."""
+    from ytdigest.numbers import find_numbers
+
+    assert find_numbers("我一於唔買，十分之危險") == []
+
+
+def test_hesitation_never_becomes_a_figure():
+    """Cantonese says adjacent digits to approximate -- 三四 is "three or four",
+    兩三 is "two or three" -- and speech repeats and stalls. Two patterns were
+    tried here and both turned that into money.
+
+    A bare digit-run pattern read 八九七七七七八 as 8,977,778 and 三四三兩三四 as
+    343,234 across the corpus. A spoken-year pattern looked safe because 年
+    bounds it, but its ONLY match in all 74 stored transcripts was 三四五六年 --
+    the year 3456, out of "可能係三三三四五六年咁樣". Restricted to real
+    centuries it then matched nothing at all, so it earned nothing and cost a
+    fabricated figure.
+
+    Ledger entries are authoritative: a summary that invented 343 or 3456 would
+    find it there and be published as verified. Spoken digit runs are therefore
+    left out entirely and simply go unchecked, which is the safe direction.
+    Magnitude-bearing figures -- 二百九十九億 -- are unaffected, and those are
+    what actually carry money.
+    """
+    from ytdigest.numbers import find_numbers
+
+    for stutter in ("八九七七七七八", "三四三兩三四", "三四三", "七八九", "七八七八"):
+        assert find_numbers(stutter) == [], f"{stutter} must not become a figure"
+
+    # The real corpus string that produced the year 3456.
+    assert find_numbers("可能係三三三四五六年咁樣") == []
+
+    # Arabic years are unaffected -- that pattern predates this task.
+    assert any(f.unit == "year" and f.value == 2022 for f in find_numbers("2022年"))
+
+    # And the figure the whole cross-check exists to catch still parses.
+    assert any(f.value == 29_900_000_000 for f in find_numbers("北水淨流入二百九十九億"))
+
+    # Unit-bearing patterns still match these, so the parser is the last line of
+    # defence: 二七八蚊 parsed to 278 HKD and 七八九成 to 7890% on real corpus rows.
+    for stutter in ("二七八蚊", "七八九成", "三四三蚊"):
+        assert all(f.value is None for f in find_numbers(stutter)), stutter
