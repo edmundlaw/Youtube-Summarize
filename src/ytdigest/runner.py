@@ -448,11 +448,13 @@ def stage_summarize(cfg: Config, conn, video: dict) -> Path:
     # is only ever escalated here, never downgraded -- summarize() already
     # guarantees it never reports "failed" for a video it chose to publish,
     # and this must not undo that.
+    from .crosscheck import DISPUTED
+
     disputed = {
         r["normalized"]: r["asr_normalized"]
         for r in conn.execute(
             "SELECT normalized, asr_normalized FROM number_ledger "
-            "WHERE video_id = ? AND crosscheck = 'disputed'", (video["id"],))
+            "WHERE video_id = ? AND crosscheck = ?", (video["id"], DISPUTED))
         if r["normalized"]
     }
     checks = V.check_text(_flatten(payload), ledger, disputed=disputed)
