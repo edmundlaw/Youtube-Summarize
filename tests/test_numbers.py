@@ -191,17 +191,23 @@ def test_figures_do_not_span_flattened_fields():
     assert not [f for f in find_numbers(flat) if "\n" in f.raw]
 
 
-def test_spoken_digit_strings_are_not_read_as_their_last_digit():
-    """九九八八 is Alibaba's ticker 9988, spoken digit by digit. The
-    compositional parser overwrote its accumulator on each digit and returned
-    8.0 -- silently wrong, which is worse than refusing. Qwen3-ASR renders every
-    ticker this way, so without this the cross-check compares noise."""
+def test_spoken_digit_strings_are_refused_not_parsed():
+    """A prior task made cn_to_number parse bare digit runs (九九八八 -> 9988)
+    instead of returning the compositional parser's silently-wrong last digit
+    (8.0). That was itself an overcorrection: a later task found that on the
+    real corpus, the _PATTERNS entries feeding bare digit runs here matched
+    Cantonese hesitation and approximation, not tickers, and removed them --
+    so nothing in production hands this function a real ticker any more. What
+    still arrives is hesitation flowing through unit-bearing patterns
+    (二七八蚊, 七八九成), which parsing would turn into a confident, wrong
+    ledger value. Refusing -- returning None -- is the fix: a missing figure
+    is safe, a fabricated one is not."""
     from ytdigest.numbers import cn_to_number
 
-    assert cn_to_number("九九八八") == 9988
-    assert cn_to_number("七零零") == 700
-    assert cn_to_number("一三四七") == 1347
-    assert cn_to_number("九八一") == 981
+    assert cn_to_number("九九八八") is None
+    assert cn_to_number("七零零") is None
+    assert cn_to_number("一三四七") is None
+    assert cn_to_number("九八一") is None
 
 
 def test_two_digit_runs_are_refused_as_ambiguous():
@@ -263,3 +269,8 @@ def test_hesitation_never_becomes_a_figure():
 
     # And the figure the whole cross-check exists to catch still parses.
     assert any(f.value == 29_900_000_000 for f in find_numbers("北水淨流入二百九十九億"))
+
+    # Unit-bearing patterns still match these, so the parser is the last line of
+    # defence: 二七八蚊 parsed to 278 HKD and 七八九成 to 7890% on real corpus rows.
+    for stutter in ("二七八蚊", "七八九成", "三四三蚊"):
+        assert all(f.value is None for f in find_numbers(stutter)), stutter
