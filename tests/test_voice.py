@@ -192,6 +192,21 @@ def test_read_slice_seeks_rather_than_loading_everything(tmp_path):
     assert chunk.shape[-1] == pytest.approx(2 * voice.SAMPLE_RATE, abs=2)
 
 
+def test_read_slice_returns_a_mono_torch_tensor():
+    """Pins the exact type/shape `read_slice` hands its callers -- a (1, N)
+    torch tensor, not a bare 1-D numpy array. tests/test_asr.py stubs this
+    boundary for Qwen3ASRMLX.transcribe, and a stub of the wrong type would
+    let those tests pass while never exercising what the real function
+    actually returns."""
+    import torch
+
+    wav = pathlib.Path(tempfile.mkdtemp()) / "c.wav"
+    _write_wav(wav, seconds=2.0)
+    chunk = voice.read_slice(wav, 0.0, 1.0)
+    assert isinstance(chunk, torch.Tensor)
+    assert chunk.shape == (1, voice.SAMPLE_RATE)
+
+
 def test_read_slice_past_the_end_returns_nothing(tmp_path):
     wav = tmp_path / "b.wav"
     _write_wav(wav, seconds=2.0)

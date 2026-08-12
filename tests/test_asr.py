@@ -4,8 +4,8 @@ The repo already learned that stubbed tests cannot see real model behaviour, so
 these cover only the wiring: span arithmetic, and that failures stay contained.
 """
 
-import numpy as np
 import pytest
+import torch
 
 from ytdigest.interfaces import SpeechRegion
 
@@ -24,6 +24,16 @@ class _FakeModel:
         return _FakeOut(f"heard{len(self.calls)}")
 
 
+def _stub_slice():
+    """The real `voice.read_slice` returns a mono torch tensor shaped (1, N)
+    -- `torch.from_numpy(samples.copy()).unsqueeze(0)`, never a bare 1-D
+    numpy array. A stub of the wrong type would let these tests pass while
+    exercising a contract Qwen3ASRMLX.transcribe never actually sees. The
+    real contract is pinned independently in
+    tests/test_voice.py::test_read_slice_returns_a_mono_torch_tensor."""
+    return torch.zeros((1, 16000), dtype=torch.float32)
+
+
 def _engine(monkeypatch, model=None):
     from ytdigest.asr.qwen3 import Qwen3ASRMLX
 
@@ -31,7 +41,7 @@ def _engine(monkeypatch, model=None):
     eng = Qwen3ASRMLX(cfg)
     eng._model = model or _FakeModel()
     monkeypatch.setattr("ytdigest.voice.read_slice",
-                        lambda *a, **k: np.zeros(16000, dtype=np.float32))
+                        lambda *a, **k: _stub_slice())
     return eng
 
 
