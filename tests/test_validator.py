@@ -588,3 +588,35 @@ def test_budget_growth_is_capped():
     assert _BUDGET_GROWTH > 1.0
     assert _BUDGET_CEILING >= 20000        # room for a dense show
     assert _BUDGET_CEILING <= 100000       # but a pathological input cannot bill on
+
+
+def test_a_disputed_figure_cannot_verify_clean():
+    """The captions put SMIC's inflow at 29億 and our own ASR at 299億. Until a
+    human resolves that, the figure must not be published as verified -- which
+    is exactly what happens today, because the ledger it is checked against was
+    built from the same wrong transcript."""
+    from ytdigest.normalize import LedgerEntry
+    from ytdigest.validator import check_text
+
+    # unit="count": a bare "29億" with no currency word (港元/蚊/HKD/...) is
+    # what find_numbers actually returns for this text -- confirmed by
+    # running it directly. "hkd" would land the ledger row in the
+    # unit-compatible branch instead of the exact-match branch this feature
+    # lives in, and never reach the disputed check at all.
+    ledger = [LedgerEntry(raw_text="29億", normalized="2900000000", unit="count",
+                          segment_id=1, start_s=100.0, confidence=None, context="")]
+    checks = check_text("北水淨流入29億", ledger,
+                        disputed={"2900000000": "29900000000"})
+
+    assert checks and checks[0].verdict == "flagged"
+    assert "29900000000" in checks[0].reason
+
+
+def test_an_agreed_figure_still_passes():
+    from ytdigest.normalize import LedgerEntry
+    from ytdigest.validator import check_text
+
+    ledger = [LedgerEntry(raw_text="56億", normalized="5600000000", unit="count",
+                          segment_id=1, start_s=100.0, confidence=None, context="")]
+    checks = check_text("淨流入56億", ledger, disputed={})
+    assert checks and checks[0].verdict == "ok"

@@ -105,6 +105,29 @@ Two things follow for anyone touching this area:
   failing. Compound forms (二百九十九億, 五十六億) are fine. This must be fixed
   before any ASR that speaks tickers aloud feeds the ledger.
 
+Since 2026-08-11 the audio stage gives every ledger figure a second reading
+from Qwen3-ASR and records `agreed` / `disputed` / `absent` / `unchecked` on
+`number_ledger`. A disputed figure returns `flagged`, so the validator refuses
+it and the digest marks it with both readings, worded as a disagreement to go
+listen to — never as which one is right. **`crosscheck IS NULL` means never
+checked and must never be read as agreement** — every row written before that
+date is null. Expect more flags than before: it is the first time anything
+could tell.
+
+Measured on a full run of `MgN00MCDDRM` (2h31m, 350 ledger figures): 78
+agreed, 246 absent, 26 disputed. The catch this exists for: captions read 北水
+淨流入29億 (2900000000) where our own ASR hears 299億 (29900000000) — the same
+mismatch documented above, now caught automatically instead of silently
+verifying against itself. Two more disputes in the same passage share that
+shape, a dropped leading digit: 54億 vs 544億, and 28億 vs 238億.
+
+Precision is not yet tuned: of the 26 disputes, roughly 6 look spurious — short
+figures such as 8 vs 188, 10 vs 1400 — because `spans_for` can merge windows
+up to 44 seconds wide, and a wide span holds more than one unrelated number
+for the pairing heuristic to latch onto. A disputed figure is a prompt to go
+check both readings against the source, not a verdict on which one is
+wrong.
+
 ## Findings that constrain the design
 
 - **Both DeepSeek models normalise Chinese numerals unprompted**:

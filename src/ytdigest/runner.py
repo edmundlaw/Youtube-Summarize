@@ -406,8 +406,9 @@ def stage_identify(cfg: Config, conn, video: dict) -> None:
 
 def stage_summarize(cfg: Config, conn, video: dict) -> Path:
     from .normalize import LedgerEntry
-    from .summarize import PROMPT_VERSION, summarize
+    from .summarize import PROMPT_VERSION, _flatten, summarize
     from .transcript import read_transcript
+    from . import validator as V
 
     artifact = D.get_artifact(conn, video["id"], "normalized")
     if artifact is None:
@@ -428,6 +429,26 @@ def stage_summarize(cfg: Config, conn, video: dict) -> Path:
         cfg, segments, ledger, data.get("dominant_lang", "yue"), log,
         title=video.get("title", ""), speakers=speakers,
     )
+
+    # The `ledger` above is what the normalize stage wrote, before the audio
+    # stage's cross-check ran against it -- so summarize() validated against
+    # a ledger that could not yet know which of its own figures our own ASR
+    # heard differently. Re-read what the audio stage recorded in the DB and
+    # re-validate the final payload against it. Disputed figures can only add
+    # flags to what summarize() already found (never remove one), so `state`
+    # is only ever escalated here, never downgraded -- summarize() already
+    # guarantees it never reports "failed" for a video it chose to publish,
+    # and this must not undo that.
+    disputed = {
+        r["normalized"]: r["asr_normalized"]
+        for r in conn.execute(
+            "SELECT normalized, asr_normalized FROM number_ledger "
+            "WHERE video_id = ? AND crosscheck = 'disputed'", (video["id"],))
+        if r["normalized"]
+    }
+    checks = V.check_text(_flatten(payload), ledger, disputed=disputed)
+    if state == V.PASSED and any(c.verdict != "ok" for c in checks):
+        state = V.PASSED_WITH_FLAGS
 
     out = cfg.data_dir / "normalized" / f"{video['id']}.summary.json"
     out.write_text(
