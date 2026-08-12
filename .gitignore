@@ -6,3 +6,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# Agent worktrees. A worktree committed into its own repo is a mess to unpick.
+.claude/worktrees/
