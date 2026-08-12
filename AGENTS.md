@@ -100,10 +100,18 @@ Two things follow for anyone touching this area:
 
 - **Do not cite the verified rate as evidence of transcript quality.** It is
   blind by construction.
-- **`numbers.py` silently corrupts spoken digit strings.** 九九八八 → `8.0`,
-  一三四七 → `7.0`, 九八一 → `1.0` — it returns the last digit rather than
-  failing. Compound forms (二百九十九億, 五十六億) are fine. This must be fixed
-  before any ASR that speaks tickers aloud feeds the ledger.
+- **`numbers.py` refuses bare digit runs (九九八八, 一三四七, 九八一) outright —
+  it returns `None`, not a parsed value.** It used to parse them (九九八八 →
+  `9988`), on the theory that ASR speaks tickers digit-by-digit. But nothing
+  in `_PATTERNS` still hands it real ticker text — those entries were removed
+  because on this corpus a bare digit run overwhelmingly matches Cantonese
+  hesitation and approximation, a speaker trailing off mid-price, not a
+  ticker. What still reaches the parser is that hesitation flowing through
+  unit-bearing patterns (股/蚊/成/厘): 二七八蚊 parsed to a clean, fabricated
+  278.0 HKD. Refusing is the only safe choice left — a missing figure costs
+  nothing, a confidently wrong one is exactly what this project exists to
+  prevent. Compound forms (二百九十九億, 五十六億) are unaffected; they are
+  what actually carry money.
 
 Since 2026-08-11 the audio stage gives every ledger figure a second reading
 from Qwen3-ASR and records `agreed` / `disputed` / `absent` / `unchecked` on
