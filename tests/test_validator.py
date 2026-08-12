@@ -308,6 +308,45 @@ def test_views_verify_level_against_ledger():
     assert verify_level(conn, "v1", 999.0, "usd")[1] is False    # value absent entirely
 
 
+def test_views_do_not_verify_against_a_disputed_ledger_row():
+    """A view's level is a real person's track record. `verify_level` used to
+    match on value and unit alone, so a ledger row our own ASR disputed --
+    e.g. the 54億-vs-544億 case found on a real video -- still verified the
+    level. That is the same false-PASS the validator's `disputed` handling
+    exists to prevent, just on a different consumer of the ledger.
+
+    `agreed`, `absent`, and NULL (never checked) rows must still verify --
+    NULL is the state of nearly every row today, so breaking it would
+    silently stop level verification altogether."""
+    import pathlib
+    import tempfile
+
+    from ytdigest import db as D
+    from ytdigest.views import verify_level
+
+    conn = D.open_db(pathlib.Path(tempfile.mkdtemp()) / "t.db", pathlib.Path("migrations"))
+    conn.execute("INSERT INTO channels (id,title,added_at) VALUES ('UC1','c',?)", (D.now_iso(),))
+    conn.execute("INSERT INTO videos (id,channel_id,title,published_at,discovered_at,status)"
+                 " VALUES ('v1','UC1','t','2026-01-01','2026-01-01','done')")
+    rows = [
+        # (raw, normalized, unit, crosscheck)
+        ("54億", "5400000000", "count", "disputed"),
+        ("100億", "10000000000", "count", "agreed"),
+        ("200億", "20000000000", "count", "absent"),
+        ("300億", "30000000000", "count", None),
+    ]
+    for raw, norm, unit, crosscheck in rows:
+        conn.execute(
+            "INSERT INTO number_ledger (video_id,raw_text,normalized,unit,segment_id,"
+            "start_s,context,crosscheck) VALUES ('v1',?,?,?,0,0,'x',?)",
+            (raw, norm, unit, crosscheck))
+
+    assert verify_level(conn, "v1", 5_400_000_000.0, "usd")[1] is False   # disputed
+    assert verify_level(conn, "v1", 10_000_000_000.0, "usd")[1] is True   # agreed
+    assert verify_level(conn, "v1", 20_000_000_000.0, "usd")[1] is True   # absent
+    assert verify_level(conn, "v1", 30_000_000_000.0, "usd")[1] is True   # NULL
+
+
 def test_views_reject_off_roster_speakers():
     from ytdigest.views import parse_views
 
