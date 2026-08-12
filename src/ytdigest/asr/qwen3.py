@@ -82,6 +82,7 @@ class Qwen3ASRMLX:
         model = self._load()
         lang = lang_hint or LANG
         out: list[Segment] = []
+        failures = 0
         for index, span in enumerate(chunks):
             try:
                 audio = read_slice(Path(audio_path), span.start, span.duration)
@@ -92,12 +93,32 @@ class Qwen3ASRMLX:
             except Exception as exc:            # noqa: BLE001 - one span, not the video
                 log.warning("asr.span_failed", start_s=span.start,
                             error=str(exc)[:200])
+                failures += 1
                 continue
             text = (said.text or "").strip()
             if not text:
+                # The span transcribed fine and simply held no speech -- a
+                # legitimate silence, not a failure. Does not count toward
+                # `failures` below.
                 continue
             out.append(Segment(
                 id=index, start=span.start, end=span.end,
                 text=text, lang=lang, confidence=None,
             ))
+
+        if chunks and failures == len(chunks):
+            # Every span raised: a systematic failure (missing torch -- it is
+            # in the [voice] extra, not [asr], and read_slice needs it; a
+            # non-16-bit wav; a truncated download), not "we listened and
+            # heard nothing." Returning [] here would be indistinguishable
+            # from real silence, and `_crosscheck_figures` would then write
+            # every ledger row `absent` -- claiming we listened and heard no
+            # number there, when in fact nothing was ever heard at all.
+            # Raising lets the caller's broad `except Exception` catch this
+            # and leave those rows NULL (never checked), which is the
+            # contract AGENTS.md draws between the two states.
+            raise RuntimeError(
+                f"every one of {len(chunks)} spans failed to transcribe; "
+                "refusing to report this as silence"
+            )
         return out

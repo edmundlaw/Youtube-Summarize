@@ -79,6 +79,38 @@ def test_full_file_mode_is_refused_rather_than_faked(monkeypatch, tmp_path):
         eng.transcribe(tmp_path / "a.wav", [])
 
 
+def test_every_span_failing_raises_rather_than_reporting_silence(monkeypatch, tmp_path):
+    """A systematic failure -- missing torch, a non-16-bit wav, a truncated
+    download -- fails every span. Returning [] here is indistinguishable from
+    a video that was genuinely quiet throughout, and `_crosscheck_figures`
+    would then write every ledger row `absent` (we listened, heard no number)
+    when in truth nothing was ever heard. Must raise instead, so the caller's
+    except leaves the rows NULL (never checked)."""
+    class _AlwaysBroken(_FakeModel):
+        def generate(self, audio, **kw):
+            raise RuntimeError("mlx blew up")
+
+    eng = _engine(monkeypatch, _AlwaysBroken())
+    with pytest.raises(Exception):
+        eng.transcribe(tmp_path / "a.wav",
+                       [SpeechRegion(0.0, 8.0), SpeechRegion(20.0, 28.0)])
+
+
+def test_all_spans_genuinely_silent_is_not_treated_as_a_failure(monkeypatch, tmp_path):
+    """Every span transcribing cleanly to empty text is real silence -- the
+    legitimate case this fix must not break. Must return [] quietly, not
+    raise, so those rows are correctly written `absent`."""
+    class _Silent(_FakeModel):
+        def generate(self, audio, **kw):
+            self.calls.append(audio)
+            return _FakeOut("")
+
+    eng = _engine(monkeypatch, _Silent())
+    segs = eng.transcribe(tmp_path / "a.wav",
+                          [SpeechRegion(0.0, 8.0), SpeechRegion(20.0, 28.0)])
+    assert segs == []
+
+
 def test_the_refusal_is_permanent_not_retryable(monkeypatch, tmp_path):
     """runner's generic handler reads exc.error_class and defaults to retryable.
     A missing feature does not become present on the third attempt, and each
