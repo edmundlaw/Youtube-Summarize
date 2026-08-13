@@ -1,3 +1,32 @@
+---
+schema: 2
+# Front-matter created by `mc migrate-status`: this file
+# had none, so it could not report its own status at all.
+# CHECK status/progress/phase — they are a starting point.
+status: BUILDING
+progress: 85
+phase: operating
+summary: >
+  Watches six Hong Kong finance channels, transcribes Cantonese/English
+  code-switched commentary, and publishes verified summaries as markdown plus a
+  Telegram digest. Running in production under launchd since 2026-07; 73 videos
+  published. Every figure is extracted to a deterministic ledger before any LLM
+  sees the transcript, and since 2026-08-12 is re-listened to by local ASR, so a
+  mis-heard number is refused rather than published as verified.
+
+# What has been BUILT, in plain language, <=100 chars each.
+features:
+  - Watches channels via RSS and queues new uploads, filtered by show and by which host is on it
+  - SQLite state machine, one subprocess per stage, single-instance under flock
+  - Deterministic number ledger extracted by regex before any LLM sees the transcript
+  - Validator that refuses any summary figure it cannot match against that ledger
+  - Speaker identification by voiceprint, so attribution is measured rather than guessed
+  - ASR cross-check: local Qwen3 re-listens to every figure and disputes are refused
+  - Markdown output plus a Telegram digest, suppressed for videos older than 3 days
+  - Views database with price resolution, for scoring each host's calls over time
+
+items: []
+---
 # ytdigest — status
 
 Last updated: 2026-07-26
@@ -13,12 +42,12 @@ markdown written and digest delivered to Telegram.
 |---|---|
 | M0 skeleton, DB, migrations, CLI, logging, `status`, `doctor` | done |
 | M1 discover + fetch (subtitles) + publish | done |
-| M2 ASR (Qwen3 via MLX) | **not built — deliberately** (see below) |
+| M2 ASR (Qwen3 via MLX) | **spans mode done** 2026-08-12; full-file mode still unbuilt (see below) |
 | M3 normalize + number ledger | done |
 | M4 summarize + validator retry loop | done |
-| M5 launchd, retries, notifications | plist written, **not loaded** |
+| M5 launchd, retries, notifications | loaded and running |
 
-47 tests, pyflakes clean, ~3,100 lines.
+194 tests, pyflakes clean.
 
 ## Measured on the first real video
 
@@ -26,7 +55,35 @@ markdown written and digest delivered to Telegram.
 Nothing unverified is published as fact — it is rendered `⚠︎` with a warning
 block at the top of the document and a note in the Telegram message.
 
-## Why M2 is not built
+## M2, and why half of it is now built
+
+**Resolved 2026-08-12.** The rule below asked whether a *better* transcript was
+worth building, and the answer turned out to be the wrong question — the
+captions are not merely noisier than ASR, they are wrong in ways nothing could
+see. 中芯 appears 0 times in 5M characters of stored transcript against 288 for
+中心; a figure the captions record as 29億 is heard by two independent models as
+299億. The validator was blind to all of it by construction, checking a summary
+against a ledger built from the same wrong transcript.
+
+So ASR was built as a **cross-check rather than a replacement**: Qwen3-ASR
+re-listens to the ~8-second window around every ledger figure, and a
+disagreement is refused rather than resolved. Live since 2026-08-12. Measured on
+a real 18-minute episode: 21 agreed, 53 absent, 9 disputed, of which at least
+two are genuine caption errors (Tencent 「49呀幾」 against a discussion of 465蚊
+— ASR hears 490; gold 「440前後」 — ASR hears 4400).
+
+**Full-file mode is still unbuilt**, which is why 全職炒家 RON LAU still produces
+nothing (see below). Qwen returns one untimed segment for its whole input, so a
+whole-video pass would place every figure at t=0 and silently break speaker
+identification. It needs VAD chunking first.
+
+Two limits worth stating plainly: 53 of 83 figures came back *unchecked*, so
+this is a net for the worst errors and not a guarantee; and precision is
+untuned, so some flags are spurious. A flag means "these two disagree, go
+listen", never "the second number is right".
+
+The original reasoning, kept because the decision rule still governs full-file
+mode:
 
 Auto-captions gave 100% time coverage on a 2h31m video (0 gaps >5s) and 0.3%
 residual repetition after dedup. ASR would fix two of four observed failure
