@@ -9,3 +9,7 @@ __pycache__/
 
 # Agent worktrees. A worktree committed into its own repo is a mess to unpick.
 .claude/worktrees/
+
+# Mission Control publishes here. The script is tracked, its output is not.
+.mc/output.json
+.mc/.output.json.tmp

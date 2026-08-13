@@ -16,12 +16,17 @@
 
   <!-- caffeinate -i keeps the machine awake through a long transcription.
        yt-dlp is upgraded first: a stale copy is the single most likely cause
-       of a silent pipeline stall when YouTube changes something. -->
+       of a silent pipeline stall when YouTube changes something.
+
+       .mc/publish.py runs last and its exit code is discarded, so the panel it
+       feeds can never fail this job. The run's own status is captured before
+       it and re-raised at the end, or a failed pipeline would be reported as a
+       success whenever publishing happened to work. -->
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>cd __YTDIGEST_HOME__ &amp;&amp; ./.venv/bin/python -m pip install -q -U yt-dlp ; /usr/bin/caffeinate -i ./.venv/bin/ytdigest run</string>
+    <string>cd __YTDIGEST_HOME__ &amp;&amp; ./.venv/bin/python -m pip install -q -U yt-dlp ; status=0 ; /usr/bin/caffeinate -i ./.venv/bin/ytdigest run || status=$? ; ./.venv/bin/python .mc/publish.py || true ; exit $status</string>
   </array>
 
   <!-- launchd, not cron: cron silently skips runs when the Mac sleeps. -->
